@@ -33,7 +33,7 @@ class JwtTokenExtractor {
     
     fun extractTenantId(token: String): String? {
         val localToken = token.replace("Bearer ", "")
-        return extractClaim(localToken) { it["tenantId"] as? String }
+        return extractClaim(localToken) { it["clientId"] as? String }
     }
     
     fun extractJuniors(token: String): Array<String>? {
