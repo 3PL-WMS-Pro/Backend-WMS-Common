@@ -1,16 +1,14 @@
 package com.wmspro.common.config
 
-import com.wmspro.common.tenant.TenantInterceptor
 import org.springframework.context.annotation.Configuration
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 
+/**
+ * Common configuration for shared components
+ * Note: TenantInterceptor is implemented separately in each microservice
+ * to allow service-specific customization
+ */
 @Configuration
-class CommonConfiguration(
-    private val tenantInterceptor: TenantInterceptor
-) : WebMvcConfigurer {
-    
-    override fun addInterceptors(registry: InterceptorRegistry) {
-        registry.addInterceptor(tenantInterceptor)
-    }
+class CommonConfiguration {
+    // Common beans and configurations can be added here
+    // TenantInterceptor is handled by each microservice individually
 }
