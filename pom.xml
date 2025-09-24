@@ -69,6 +69,12 @@
 			<version>1.4.9</version>
 		</dependency>
 
+		<!-- Ensure Java 8 date/time types (e.g., LocalDateTime) are supported by Jackson -->
+		<dependency>
+			<groupId>com.fasterxml.jackson.datatype</groupId>
+			<artifactId>jackson-datatype-jsr310</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>

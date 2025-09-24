@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component
 class TenantConnectionFetcher {
 
     private val logger = LoggerFactory.getLogger(TenantConnectionFetcher::class.java)
-    private val objectMapper = jacksonObjectMapper()
+    private val objectMapper = jacksonObjectMapper().findAndRegisterModules()
 
     @Value("\${app.tenant.service.url:http://localhost:6010}")
     private lateinit var tenantServiceUrl: String
@@ -69,8 +69,21 @@ class TenantConnectionFetcher {
                     val mongoUrl = dataMap["url"] as String
                     val databaseName = dataMap["databaseName"] as String
 
-                    // Build the full connection string
-                    val connectionString = "$mongoUrl/$databaseName"
+                    // Build the full connection string robustly:
+                    // - If URL already contains a database segment, keep it.
+                    // - If URL has query params, insert database name before '?'.
+                    val questionIndex = mongoUrl.indexOf('?')
+                    val base = if (questionIndex >= 0) mongoUrl.substring(0, questionIndex) else mongoUrl
+                    val query = if (questionIndex >= 0) mongoUrl.substring(questionIndex) else ""
+                    val baseNoSlash = if (base.endsWith("/")) base.dropLast(1) else base
+                    val afterLastSlash = baseNoSlash.substringAfterLast("/")
+                    val hasDbSegment = !afterLastSlash.contains(":") && afterLastSlash.isNotBlank()
+                    val connectionString = if (hasDbSegment) {
+                        // URL already has DB segment; just append query if present
+                        baseNoSlash + query
+                    } else {
+                        "$baseNoSlash/$databaseName$query"
+                    }
                     logger.info("Successfully fetched connection for tenant $tenantId")
 
                     connectionString
