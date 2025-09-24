@@ -9,8 +9,8 @@ object MongoConnectionStorage {
     private val storage = ThreadLocal<String>()
 
     // Default MongoDB URLs - can be set by each service
-    var DEFAULT_DB_URL: String = "mongodb://localhost:27017/wms_default"
-    var DEFAULT_DB_URL_CENTRAL: String = "mongodb://localhost:27017/wms_central"
+    var DEFAULT_DB_URL: String = "mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary"
+    var DEFAULT_DB_URL_CENTRAL: String = "mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary"
 
     /**
      * Gets the current MongoDB connection string
