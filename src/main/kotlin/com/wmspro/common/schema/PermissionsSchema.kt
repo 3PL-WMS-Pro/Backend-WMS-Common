@@ -155,6 +155,19 @@ data class PermissionsSchema(
                 canExportData = false
             )
         }
+
+        /**
+         * Creates default permissions based on role code
+         */
+        fun defaultForRole(roleCode: String): PermissionsSchema {
+            return when {
+                roleCode.startsWith("ROLE-001") || roleCode == "ADMIN" -> createAdminPermissions()
+                roleCode.startsWith("ROLE-002") || roleCode == "MANAGER" -> createManagerPermissions()
+                roleCode.startsWith("ROLE-003") || roleCode == "OPERATOR" -> createOperationalPermissions()
+                roleCode.startsWith("ROLE-004") || roleCode == "VIEWER" -> createReadOnlyPermissions()
+                else -> PermissionsSchema() // Default: minimal permissions
+            }
+        }
     }
 
     /**
