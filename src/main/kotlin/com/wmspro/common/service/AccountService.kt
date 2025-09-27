@@ -21,10 +21,6 @@ class AccountService(
     @Value("\${app.external-api.account-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-names}")
     private lateinit var accountServiceUrl: String
 
-    data class AccountNamesRequest(
-        val accountIds: List<Long>
-    )
-
     data class AccountNamesResponse(
         val success: Boolean,
         val message: String?,
@@ -57,8 +53,7 @@ class AccountService(
             headers["X-Client"] = tenantId
             headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
 
-            val request = AccountNamesRequest(accountIds)
-            val entity = HttpEntity(request, headers)
+            val entity = HttpEntity(accountIds, headers)
 
             val response = restTemplate.exchange(
                 accountServiceUrl,
