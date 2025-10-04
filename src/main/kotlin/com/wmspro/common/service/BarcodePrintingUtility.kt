@@ -161,7 +161,7 @@ class BarcodePrintingUtility {
      */
     private fun getBarcodeDimensions(itemType: String): BarcodeDimensions {
         return when (itemType.uppercase()) {
-            "ITEM" -> BarcodeDimensions(widthMm = 25f, heightMm = 15f)
+            "ITEM", "SKU_ITEM" -> BarcodeDimensions(widthMm = 25f, heightMm = 15f)
             "BOX" -> BarcodeDimensions(widthMm = 37f, heightMm = 26f)
             "PALLET" -> BarcodeDimensions(widthMm = 100f, heightMm = 50f)
             else -> {
