@@ -163,7 +163,7 @@ class BarcodePrintingUtility {
         return when (itemType.uppercase()) {
             "ITEM" -> BarcodeDimensions(widthMm = 25f, heightMm = 15f)
             "BOX" -> BarcodeDimensions(widthMm = 37f, heightMm = 26f)
-            "PALLET", "PALETTE" -> BarcodeDimensions(widthMm = 100f, heightMm = 50f)
+            "PALLET" -> BarcodeDimensions(widthMm = 100f, heightMm = 50f)
             else -> {
                 logger.warn("Unknown item type: $itemType, using default ITEM dimensions")
                 BarcodeDimensions(widthMm = 25f, heightMm = 15f)
