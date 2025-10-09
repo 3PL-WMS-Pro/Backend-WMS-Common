@@ -21,10 +21,19 @@ class AccountService(
     @Value("\${app.external-api.account-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-names}")
     private lateinit var accountServiceUrl: String
 
+    @Value("\${app.external-api.account-code-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-codes}")
+    private lateinit var accountCodeServiceUrl: String
+
     data class AccountNamesResponse(
         val success: Boolean,
         val message: String?,
         val data: Map<String, String>? // account_id -> account_name
+    )
+
+    data class AccountCodesResponse(
+        val success: Boolean,
+        val message: String?,
+        val data: Map<String, String>? // account_id -> account_code
     )
 
     /**
@@ -82,6 +91,65 @@ class AccountService(
             return emptyMap()
         } catch (e: Exception) {
             logger.error("Unexpected error while fetching account names", e)
+            return emptyMap()
+        }
+    }
+
+    /**
+     * Fetches account codes for the given account IDs from external API
+     *
+     * @param accountIds List of account IDs to fetch codes for
+     * @param authToken JWT token from the request
+     * @return Map of account_id to account_code
+     */
+    @Cacheable(value = ["accountCodes"], key = "#accountIds.toString() + '_' + #tenantId")
+    fun fetchAccountCodes(
+        accountIds: List<Long>,
+        authToken: String,
+        tenantId: String = TenantContext.getCurrentTenant() ?: ""
+    ): Map<String, String> {
+
+        if (accountIds.isEmpty()) {
+            return emptyMap()
+        }
+
+        logger.debug("Fetching account codes for IDs: {} for tenant: {}", accountIds, tenantId)
+
+        try {
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_JSON
+            headers["X-Client"] = tenantId
+            headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
+
+            val entity = HttpEntity(accountIds, headers)
+
+            val response = restTemplate.exchange(
+                accountCodeServiceUrl,
+                HttpMethod.POST,
+                entity,
+                String::class.java
+            )
+
+            if (response.statusCode == HttpStatus.OK) {
+                val accountResponse = objectMapper.readValue(response.body, AccountCodesResponse::class.java)
+
+                if (accountResponse.success && accountResponse.data != null) {
+                    logger.debug("Successfully fetched {} account codes", accountResponse.data.size)
+                    return accountResponse.data
+                } else {
+                    logger.warn("Account code fetch was not successful: {}", accountResponse.message)
+                    return emptyMap()
+                }
+            } else {
+                logger.error("Failed to fetch account codes. Status: {}", response.statusCode)
+                return emptyMap()
+            }
+
+        } catch (e: RestClientException) {
+            logger.error("Error fetching account codes from external API", e)
+            return emptyMap()
+        } catch (e: Exception) {
+            logger.error("Unexpected error while fetching account codes", e)
             return emptyMap()
         }
     }
