@@ -154,19 +154,20 @@ class BarcodePrintingUtility {
 
         // Text area dimensions
         val barcodeTextHeight = fontSize * 2.5f  // Barcode text area
-        val skuNameHeight = if (showSkuName) fontSize * 2.0f else 0f  // SKU name area (slightly smaller)
+        val skuNameHeight = if (showSkuName) fontSize * 1.5f else 0f  // SKU name area (smaller)
 
         // Gap between components
         val gap = 2f
+        val skuNameGap = if (showSkuName) 1f else 0f  // Smaller gap before SKU name
 
         // Barcode dimensions - use remaining space
-        val totalTextHeight = barcodeTextHeight + skuNameHeight + (if (showSkuName) gap else 0f)
+        val totalTextHeight = barcodeTextHeight + skuNameHeight + skuNameGap
         val barcodeHeight = usableHeight - totalTextHeight - gap
         val barcodeWidth = usableWidth
 
         // Calculate vertical centering
         val totalContentHeight = if (showSkuName) {
-            barcodeHeight + gap + barcodeTextHeight + gap + skuNameHeight
+            barcodeHeight + gap + barcodeTextHeight + skuNameGap + skuNameHeight
         } else {
             barcodeHeight + gap + barcodeTextHeight
         }
@@ -190,7 +191,7 @@ class BarcodePrintingUtility {
             .setTextAlignment(TextAlignment.CENTER)
             .setFontSize(fontSize)
             .setMarginTop(0f)
-            .setMarginBottom(if (showSkuName) gap else 0f)
+            .setMarginBottom(if (showSkuName) skuNameGap else 0f)
             .setBold()
 
         document.add(textParagraph)
@@ -199,10 +200,10 @@ class BarcodePrintingUtility {
         if (showSkuName) {
             val skuNameParagraph = Paragraph(barcodeInfo.skuName)
                 .setTextAlignment(TextAlignment.CENTER)
-                .setFontSize(fontSize * 0.85f)  // Slightly smaller than barcode text
+                .setFontSize(fontSize * 0.65f)  // Significantly smaller than barcode text
                 .setMarginTop(0f)
                 .setMarginBottom(0f)
-                .setBold()
+            // Note: Not bold to make it less prominent
 
             document.add(skuNameParagraph)
         }
