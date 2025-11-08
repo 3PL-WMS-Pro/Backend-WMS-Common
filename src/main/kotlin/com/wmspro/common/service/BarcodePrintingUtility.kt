@@ -113,7 +113,7 @@ class BarcodePrintingUtility {
     /**
      * Adds barcode content (image + text) to the current page
      * Properly centered and sized for thermal label printing
-     * For SKU items, includes SKU name above the barcode
+     * For SKU items, includes SKU name below the barcode number
      */
     private fun addBarcodeContent(
         document: Document,
@@ -166,23 +166,11 @@ class BarcodePrintingUtility {
 
         // Calculate vertical centering
         val totalContentHeight = if (showSkuName) {
-            skuNameHeight + gap + barcodeHeight + gap + barcodeTextHeight
+            barcodeHeight + gap + barcodeTextHeight + gap + skuNameHeight
         } else {
             barcodeHeight + gap + barcodeTextHeight
         }
         val verticalPadding = (usableHeight - totalContentHeight) / 2f
-
-        // Add SKU name at the top (if available)
-        if (showSkuName) {
-            val skuNameParagraph = Paragraph(barcodeInfo.skuName)
-                .setTextAlignment(TextAlignment.CENTER)
-                .setFontSize(fontSize * 0.85f)  // Slightly smaller than barcode text
-                .setMarginTop(Math.max(verticalPadding, 0f))
-                .setMarginBottom(gap)
-                .setBold()
-
-            document.add(skuNameParagraph)
-        }
 
         // Set image dimensions to fill available space
         // CRITICAL: Use setAutoScale(false) to force exact dimensions
@@ -191,13 +179,7 @@ class BarcodePrintingUtility {
         image.setHeight(barcodeHeight)
         image.setAutoScale(false)  // FORCE exact dimensions, ignore aspect ratio
         image.setHorizontalAlignment(HorizontalAlignment.CENTER)
-
-        // Apply top margin only if SKU name is not shown
-        if (!showSkuName) {
-            image.setMarginTop(Math.max(verticalPadding, 0f))
-        } else {
-            image.setMarginTop(0f)
-        }
+        image.setMarginTop(Math.max(verticalPadding, 0f))  // Center vertically
         image.setMarginBottom(gap)
 
         // Add barcode image
@@ -208,10 +190,22 @@ class BarcodePrintingUtility {
             .setTextAlignment(TextAlignment.CENTER)
             .setFontSize(fontSize)
             .setMarginTop(0f)
-            .setMarginBottom(0f)
+            .setMarginBottom(if (showSkuName) gap else 0f)
             .setBold()
 
         document.add(textParagraph)
+
+        // Add SKU name at the bottom (if available)
+        if (showSkuName) {
+            val skuNameParagraph = Paragraph(barcodeInfo.skuName)
+                .setTextAlignment(TextAlignment.CENTER)
+                .setFontSize(fontSize * 0.85f)  // Slightly smaller than barcode text
+                .setMarginTop(0f)
+                .setMarginBottom(0f)
+                .setBold()
+
+            document.add(skuNameParagraph)
+        }
 
         logger.debug("Added barcode for: $barcodeText with SKU name: ${barcodeInfo.skuName ?: "N/A"} (barcode: ${barcodeWidth}x${barcodeHeight}pt, page: ${pageWidth}x${pageHeight}pt)")
     }
