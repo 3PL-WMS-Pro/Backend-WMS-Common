@@ -53,7 +53,20 @@ class BarcodePrintingUtility {
      * @return BASE64 encoded PDF string
      */
     fun generateBarcodePDF(itemType: String, barcodes: List<String>): String {
-        logger.info("Generating barcode PDF for itemType: $itemType with ${barcodes.size} barcodes")
+        // Convert to BarcodeInfo objects without SKU names (backward compatibility)
+        val barcodeInfoList = barcodes.map { BarcodeInfo(barcodeText = it, skuName = null) }
+        return generateBarcodePDFWithInfo(itemType, barcodeInfoList)
+    }
+
+    /**
+     * Generates a PDF with scannable barcodes with additional SKU information
+     *
+     * @param itemType The type of item (ITEM, BOX, PALLET) - determines barcode dimensions
+     * @param barcodeInfoList List of barcode information including optional SKU names
+     * @return BASE64 encoded PDF string
+     */
+    fun generateBarcodePDFWithInfo(itemType: String, barcodeInfoList: List<BarcodeInfo>): String {
+        logger.info("Generating barcode PDF for itemType: $itemType with ${barcodeInfoList.size} barcodes")
 
         try {
             // Determine dimensions based on item type
@@ -74,12 +87,12 @@ class BarcodePrintingUtility {
             document.setMargins(2f, 2f, 2f, 2f)
 
             // Generate a page for each barcode
-            barcodes.forEachIndexed { index, barcodeText ->
+            barcodeInfoList.forEachIndexed { index, barcodeInfo ->
                 // Add page break before each barcode (except the first one)
                 if (index > 0) {
                     document.add(com.itextpdf.layout.element.AreaBreak(pageSize))
                 }
-                addBarcodeContent(document, barcodeText, dimensions, pageWidth, pageHeight)
+                addBarcodeContent(document, barcodeInfo, dimensions, pageWidth, pageHeight, itemType)
             }
 
             document.close()
@@ -88,7 +101,7 @@ class BarcodePrintingUtility {
             val pdfBytes = outputStream.toByteArray()
             val base64PDF = Base64.getEncoder().encodeToString(pdfBytes)
 
-            logger.info("Successfully generated barcode PDF with ${barcodes.size} pages")
+            logger.info("Successfully generated barcode PDF with ${barcodeInfoList.size} pages")
             return base64PDF
 
         } catch (e: Exception) {
@@ -100,14 +113,18 @@ class BarcodePrintingUtility {
     /**
      * Adds barcode content (image + text) to the current page
      * Properly centered and sized for thermal label printing
+     * For SKU items, includes SKU name above the barcode
      */
     private fun addBarcodeContent(
         document: Document,
-        barcodeText: String,
+        barcodeInfo: BarcodeInfo,
         dimensions: BarcodeDimensions,
         pageWidth: Float,
-        pageHeight: Float
+        pageHeight: Float,
+        itemType: String
     ) {
+        val barcodeText = barcodeInfo.barcodeText
+
         // Generate barcode image
         val barcodeImage = generateBarcodeImage(barcodeText, dimensions)
 
@@ -126,25 +143,46 @@ class BarcodePrintingUtility {
             else -> 8f                       // ITEM - increased for readability
         }
 
+        // Determine if we should show SKU name (only for SKU_ITEM/ITEM types)
+        val showSkuName = (itemType.uppercase() == "SKU_ITEM" || itemType.uppercase() == "ITEM")
+                          && !barcodeInfo.skuName.isNullOrBlank()
+
         // Calculate proper dimensions for maximum space utilization
         // Account for document margins (2pt on each side = 4pt total)
         val usableWidth = pageWidth - 4f
         val usableHeight = pageHeight - 4f
 
         // Text area dimensions
-        val textAreaHeight = fontSize * 2.5f  // Font size + spacing
+        val barcodeTextHeight = fontSize * 2.5f  // Barcode text area
+        val skuNameHeight = if (showSkuName) fontSize * 2.0f else 0f  // SKU name area (slightly smaller)
 
-        // Gap between barcode and text
+        // Gap between components
         val gap = 2f
 
         // Barcode dimensions - use remaining space
-        val barcodeHeight = usableHeight - textAreaHeight - gap
+        val totalTextHeight = barcodeTextHeight + skuNameHeight + (if (showSkuName) gap else 0f)
+        val barcodeHeight = usableHeight - totalTextHeight - gap
         val barcodeWidth = usableWidth
 
         // Calculate vertical centering
-        // Total content height = barcode + gap + text
-        val totalContentHeight = barcodeHeight + gap + textAreaHeight
+        val totalContentHeight = if (showSkuName) {
+            skuNameHeight + gap + barcodeHeight + gap + barcodeTextHeight
+        } else {
+            barcodeHeight + gap + barcodeTextHeight
+        }
         val verticalPadding = (usableHeight - totalContentHeight) / 2f
+
+        // Add SKU name at the top (if available)
+        if (showSkuName) {
+            val skuNameParagraph = Paragraph(barcodeInfo.skuName)
+                .setTextAlignment(TextAlignment.CENTER)
+                .setFontSize(fontSize * 0.85f)  // Slightly smaller than barcode text
+                .setMarginTop(Math.max(verticalPadding, 0f))
+                .setMarginBottom(gap)
+                .setBold()
+
+            document.add(skuNameParagraph)
+        }
 
         // Set image dimensions to fill available space
         // CRITICAL: Use setAutoScale(false) to force exact dimensions
@@ -153,13 +191,19 @@ class BarcodePrintingUtility {
         image.setHeight(barcodeHeight)
         image.setAutoScale(false)  // FORCE exact dimensions, ignore aspect ratio
         image.setHorizontalAlignment(HorizontalAlignment.CENTER)
-        image.setMarginTop(Math.max(verticalPadding, 0f))  // Center vertically
+
+        // Apply top margin only if SKU name is not shown
+        if (!showSkuName) {
+            image.setMarginTop(Math.max(verticalPadding, 0f))
+        } else {
+            image.setMarginTop(0f)
+        }
         image.setMarginBottom(gap)
 
         // Add barcode image
         document.add(image)
 
-        // Add human-readable text below barcode - bold and centered
+        // Add human-readable barcode text below barcode - bold and centered
         val textParagraph = Paragraph(barcodeText)
             .setTextAlignment(TextAlignment.CENTER)
             .setFontSize(fontSize)
@@ -169,7 +213,7 @@ class BarcodePrintingUtility {
 
         document.add(textParagraph)
 
-        logger.debug("Added barcode for: $barcodeText (barcode: ${barcodeWidth}x${barcodeHeight}pt, page: ${pageWidth}x${pageHeight}pt)")
+        logger.debug("Added barcode for: $barcodeText with SKU name: ${barcodeInfo.skuName ?: "N/A"} (barcode: ${barcodeWidth}x${barcodeHeight}pt, page: ${pageWidth}x${pageHeight}pt)")
     }
 
     /**
@@ -237,5 +281,16 @@ class BarcodePrintingUtility {
     private data class BarcodeDimensions(
         val widthMm: Float,
         val heightMm: Float
+    )
+
+    /**
+     * Data class to hold barcode information including optional SKU name
+     *
+     * @param barcodeText The barcode string to encode (required)
+     * @param skuName The SKU name to display above the barcode (optional, only for SKU_ITEM/ITEM types)
+     */
+    data class BarcodeInfo(
+        val barcodeText: String,
+        val skuName: String? = null
     )
 }
