@@ -119,6 +119,7 @@ class BarcodePrintingUtility {
      * Adds barcode content (image + text) to the current page
      * Properly centered and sized for thermal label printing
      * For SKU items, includes SKU name below the barcode number
+     * For BOX/PALLET items, includes account name and received date below the barcode number
      */
     private fun addBarcodeContent(
         document: Document,
@@ -128,6 +129,13 @@ class BarcodePrintingUtility {
         pageHeight: Float,
         itemType: String
     ) {
+        // For BOX/PALLET, use structured layout with section dividers
+        if (itemType.uppercase() == "BOX" || itemType.uppercase() == "PALLET") {
+            addStructuredBarcodeContent(document, barcodeInfo, dimensions, pageWidth, pageHeight, itemType)
+            return
+        }
+
+        // For SKU_ITEM, use compact layout (original implementation)
         val barcodeText = barcodeInfo.barcodeText
 
         // Generate barcode image
@@ -142,11 +150,7 @@ class BarcodePrintingUtility {
         val image = Image(imageData)
 
         // Font size based on label type
-        val fontSize = when {
-            dimensions.widthMm > 150 -> 16f  // PALLET
-            dimensions.widthMm > 80 -> 12f   // BOX
-            else -> 5.5f                     // ITEM - optimized for compact layout
-        }
+        val fontSize = 5.5f  // ITEM - optimized for compact layout
 
         // Determine if we should show SKU name (only for SKU_ITEM/ITEM types)
         val showSkuName = (itemType.uppercase() == "SKU_ITEM" || itemType.uppercase() == "ITEM")
@@ -171,11 +175,7 @@ class BarcodePrintingUtility {
         val barcodeWidth = usableWidth
 
         // Calculate vertical layout - bottom-aligned text
-        val totalContentHeight = if (showSkuName) {
-            barcodeHeight + gap + barcodeTextHeight + skuNameGap + skuNameHeight
-        } else {
-            barcodeHeight + gap + barcodeTextHeight
-        }
+        val totalContentHeight = barcodeHeight + gap + barcodeTextHeight + skuNameHeight + skuNameGap
         val remainingSpace = usableHeight - totalContentHeight
 
         // Use Table layout for precise vertical positioning
@@ -240,7 +240,7 @@ class BarcodePrintingUtility {
             table.addCell(microSpacerCell)
         }
 
-        // Row 5: SKU name (if available)
+        // Row 5: SKU name (if available for SKU_ITEM/ITEM types)
         if (showSkuName) {
             val skuNameParagraph = Paragraph(barcodeInfo.skuName)
                 .setTextAlignment(TextAlignment.CENTER)
@@ -263,6 +263,179 @@ class BarcodePrintingUtility {
     }
 
     /**
+     * Adds structured barcode content for BOX/PALLET labels with section dividers
+     * Creates a professional label layout similar to customer's sketch
+     * Optimized for horizontal/landscape orientation with full-width composition
+     */
+    private fun addStructuredBarcodeContent(
+        document: Document,
+        barcodeInfo: BarcodeInfo,
+        dimensions: BarcodeDimensions,
+        pageWidth: Float,
+        pageHeight: Float,
+        itemType: String
+    ) {
+        val barcodeText = barcodeInfo.barcodeText
+
+        // Font size based on label type (adjusted for landscape orientation)
+        val fontSize = when {
+            dimensions.widthMm > 180 -> 16f  // PALLET (landscape)
+            else -> 12f   // BOX (landscape)
+        }
+
+        // Generate barcode image
+        val barcodeImage = generateBarcodeImage(barcodeText, dimensions)
+        val imageBytes = ByteArrayOutputStream()
+        ImageIO.write(barcodeImage, "PNG", imageBytes)
+        val imageData = ImageDataFactory.create(imageBytes.toByteArray())
+        val image = Image(imageData)
+
+        // Calculate usable dimensions based on document margins (already set: 3pt top/bottom, 0.5pt left/right)
+        // Document margins are applied at document level, so we use full available space
+        val documentTopMargin = 3f
+        val documentBottomMargin = 3f
+        val documentLeftMargin = 0.5f
+        val documentRightMargin = 0.5f
+
+        val usableWidth = pageWidth - documentLeftMargin - documentRightMargin
+        val usableHeight = pageHeight - documentTopMargin - documentBottomMargin
+
+        // Border style for section dividers
+        val borderColor = com.itextpdf.kernel.colors.ColorConstants.BLACK
+        val borderWidth = 1f
+
+        // Create main table layout - NO margins (document margins already applied)
+        // Set explicit height to prevent overflow to next page
+        val mainTable = Table(UnitValue.createPercentArray(floatArrayOf(100f)))
+            .setWidth(UnitValue.createPercentValue(100f))
+            .setHeight(usableHeight)  // Exact height to fit within page
+            .setBorder(null)
+            .setPadding(0f)
+            .setMargin(0f)  // NO table margins - using document margins only
+
+        // Section 1: Account/Company Name with Account ID (with bottom border, left-aligned)
+        if (!barcodeInfo.accountName.isNullOrBlank()) {
+            val accountText = buildString {
+                append(barcodeInfo.accountName)
+                if (!barcodeInfo.accountId.isNullOrBlank()) {
+                    append("  (#${barcodeInfo.accountId})")
+                }
+            }
+
+            val accountParagraph = Paragraph(accountText)
+                .setTextAlignment(TextAlignment.LEFT)
+                .setFontSize(fontSize * 1.0f)
+                .setBold()
+                .setMargin(0f)
+
+            val accountCell = Cell()
+                .add(accountParagraph)
+                .setPadding(fontSize * 0.4f)
+                .setPaddingLeft(fontSize * 0.5f)
+                .setBorderTop(null)
+                .setBorderLeft(null)
+                .setBorderRight(null)
+                .setBorderBottom(com.itextpdf.layout.borders.SolidBorder(borderColor, borderWidth))
+                .setTextAlignment(TextAlignment.LEFT)
+            mainTable.addCell(accountCell)
+        }
+
+        // Section 2: Metadata row - Item Type and Received Date (with bottom border, left-aligned)
+        val metadataText = buildString {
+            append("Type: ${itemType.uppercase()}")
+            if (!barcodeInfo.receivedDate.isNullOrBlank()) {
+                append("    |    Received: ${barcodeInfo.receivedDate}")
+            }
+        }
+
+        val metadataParagraph = Paragraph(metadataText)
+            .setTextAlignment(TextAlignment.LEFT)
+            .setFontSize(fontSize * 0.75f)
+            .setMargin(0f)
+
+        val metadataCell = Cell()
+            .add(metadataParagraph)
+            .setPadding(fontSize * 0.35f)
+            .setPaddingLeft(fontSize * 0.5f)
+            .setBorderTop(null)
+            .setBorderLeft(null)
+            .setBorderRight(null)
+            .setBorderBottom(com.itextpdf.layout.borders.SolidBorder(borderColor, borderWidth))
+            .setTextAlignment(TextAlignment.LEFT)
+        mainTable.addCell(metadataCell)
+
+        // Section 3: Combined Barcode Image + Text (vertically centered in remaining space)
+        // For landscape orientation, use available vertical space and center everything
+        // Calculate header height including padding and borders:
+        // Account section: fontSize * 1.0f + (fontSize * 0.4f * 2 padding) + borderWidth
+        // Metadata section: fontSize * 0.75f + (fontSize * 0.35f * 2 padding) + borderWidth
+        val accountSectionHeight = (fontSize * 1.0f) + (fontSize * 0.4f * 2) + borderWidth
+        val metadataSectionHeight = (fontSize * 0.75f) + (fontSize * 0.35f * 2) + borderWidth
+        val headerHeight = accountSectionHeight + metadataSectionHeight
+        val remainingHeight = usableHeight - headerHeight
+
+        val barcodeTextHeight = fontSize * 1.1f * 1.5f  // Text height
+        val barcodeImageHeight = remainingHeight * 0.55f  // 55% for barcode image
+        val totalBarcodeContentHeight = barcodeImageHeight + barcodeTextHeight
+        val verticalSpacerHeight = (remainingHeight - totalBarcodeContentHeight) / 2  // Center vertically
+
+        val barcodeWidth = usableWidth
+
+        // Top spacer to push barcode content down (vertical centering)
+        if (verticalSpacerHeight > 0) {
+            val topSpacerCell = Cell()
+                .add(Paragraph(""))
+                .setHeight(verticalSpacerHeight)
+                .setBorder(null)
+                .setPadding(0f)
+            mainTable.addCell(topSpacerCell)
+        }
+
+        // Barcode image
+        image.setWidth(barcodeWidth)
+        image.setHeight(barcodeImageHeight)
+        image.setAutoScale(false)
+        image.setHorizontalAlignment(HorizontalAlignment.CENTER)
+
+        val barcodeCell = Cell()
+            .add(image)
+            .setPadding(0f)
+            .setBorder(null)
+            .setTextAlignment(TextAlignment.CENTER)
+            .setVerticalAlignment(VerticalAlignment.MIDDLE)
+        mainTable.addCell(barcodeCell)
+
+        // Barcode Text (centered, no border, minimal top padding)
+        val textParagraph = Paragraph(barcodeText)
+            .setTextAlignment(TextAlignment.CENTER)
+            .setFontSize(fontSize * 1.1f)
+            .setBold()
+            .setMargin(0f)
+
+        val textCell = Cell()
+            .add(textParagraph)
+            .setPadding(0f)
+            .setPaddingTop(fontSize * 0.3f)
+            .setBorder(null)
+            .setTextAlignment(TextAlignment.CENTER)
+        mainTable.addCell(textCell)
+
+        // Bottom spacer to balance vertical centering
+        if (verticalSpacerHeight > 0) {
+            val bottomSpacerCell = Cell()
+                .add(Paragraph(""))
+                .setHeight(verticalSpacerHeight)
+                .setBorder(null)
+                .setPadding(0f)
+            mainTable.addCell(bottomSpacerCell)
+        }
+
+        document.add(mainTable)
+
+        logger.debug("Added structured barcode for: $barcodeText, type: $itemType, account: ${barcodeInfo.accountName ?: "N/A"}, date: ${barcodeInfo.receivedDate ?: "N/A"} (page: ${pageWidth}x${pageHeight}pt)")
+    }
+
+    /**
      * Generates a Code128 barcode image
      * Optimized for horizontal scanning with proper aspect ratio
      */
@@ -282,12 +455,12 @@ class BarcodePrintingUtility {
                 ((13.0 / 25.4) * PRINTER_DPI).toInt()  // 13mm height = ~104 pixels
             }
             dimensions.widthMm < 120 -> {
-                // Medium items: 35% of page height
-                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.35).toInt()
+                // Medium items (BOX): Reduced from 35% to 28% to make room for account name text
+                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.28).toInt()
             }
             else -> {
-                // Large items: 40% of page height
-                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.40).toInt()
+                // Large items (PALLET): Reduced from 40% to 32% to make room for account name text
+                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.32).toInt()
             }
         }
 
@@ -307,11 +480,12 @@ class BarcodePrintingUtility {
     }
 
     /**
-     * Returns barcode dimensions based on item type (all in landscape orientation)
+     * Returns barcode dimensions based on item type
+     * All types use landscape/horizontal orientation
      */
     private fun getBarcodeDimensions(itemType: String): BarcodeDimensions {
         return when (itemType.uppercase()) {
-            "ITEM", "SKU_ITEM" -> BarcodeDimensions(widthMm = 37.29f, heightMm = 25.93f)
+            "ITEM", "SKU_ITEM" -> BarcodeDimensions(widthMm = 37.29f, heightMm = 25.93f)  // Landscape
             "BOX" -> BarcodeDimensions(widthMm = 105f, heightMm = 74f)  // A7 landscape
             "PALLET" -> BarcodeDimensions(widthMm = 210f, heightMm = 148f)  // A5 landscape
             else -> {
@@ -330,13 +504,19 @@ class BarcodePrintingUtility {
     )
 
     /**
-     * Data class to hold barcode information including optional SKU name
+     * Data class to hold barcode information including optional metadata
      *
      * @param barcodeText The barcode string to encode (required)
-     * @param skuName The SKU name to display above the barcode (optional, only for SKU_ITEM/ITEM types)
+     * @param skuName The SKU name to display (optional, only for SKU_ITEM/ITEM types)
+     * @param accountName The company/account name to display (optional, only for BOX/PALLET types)
+     * @param accountId The account ID/code to display (optional, only for BOX/PALLET types)
+     * @param receivedDate The received date to display (optional, only for BOX/PALLET types)
      */
     data class BarcodeInfo(
         val barcodeText: String,
-        val skuName: String? = null
+        val skuName: String? = null,
+        val accountName: String? = null,
+        val accountId: String? = null,
+        val receivedDate: String? = null
     )
 }
