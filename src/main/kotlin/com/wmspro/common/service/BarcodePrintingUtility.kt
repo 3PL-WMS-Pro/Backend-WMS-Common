@@ -12,8 +12,12 @@ import com.itextpdf.kernel.pdf.PdfWriter
 import com.itextpdf.layout.Document
 import com.itextpdf.layout.element.Image
 import com.itextpdf.layout.element.Paragraph
+import com.itextpdf.layout.element.Table
+import com.itextpdf.layout.element.Cell
 import com.itextpdf.layout.properties.HorizontalAlignment
 import com.itextpdf.layout.properties.TextAlignment
+import com.itextpdf.layout.properties.VerticalAlignment
+import com.itextpdf.layout.properties.UnitValue
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.awt.image.BufferedImage
@@ -84,7 +88,8 @@ class BarcodePrintingUtility {
             val document = Document(pdfDocument, pageSize)
 
             // Set very minimal margins for maximum space utilization
-            document.setMargins(2f, 2f, 2f, 2f)
+            // Top/Bottom: 3pt for spacing, Left/Right: 0.5pt for maximum barcode width
+            document.setMargins(3f, 0.5f, 3f, 0.5f)
 
             // Generate a page for each barcode
             barcodeInfoList.forEachIndexed { index, barcodeInfo ->
@@ -140,7 +145,7 @@ class BarcodePrintingUtility {
         val fontSize = when {
             dimensions.widthMm > 150 -> 16f  // PALLET
             dimensions.widthMm > 80 -> 12f   // BOX
-            else -> 8f                       // ITEM - increased for readability
+            else -> 5.5f                     // ITEM - optimized for compact layout
         }
 
         // Determine if we should show SKU name (only for SKU_ITEM/ITEM types)
@@ -148,65 +153,111 @@ class BarcodePrintingUtility {
                           && !barcodeInfo.skuName.isNullOrBlank()
 
         // Calculate proper dimensions for maximum space utilization
-        // Account for document margins (2pt on each side = 4pt total)
-        val usableWidth = pageWidth - 4f
-        val usableHeight = pageHeight - 4f
+        // Account for document margins (0.5pt left/right = 1pt total, 3pt top/bottom = 6pt total)
+        val usableWidth = pageWidth - 1f  // Maximum barcode width
+        val usableHeight = pageHeight - 6f
 
-        // Text area dimensions
-        val barcodeTextHeight = fontSize * 2.5f  // Barcode text area
-        val skuNameHeight = if (showSkuName) fontSize * 1.5f else 0f  // SKU name area (smaller)
+        // Text area dimensions - ultra compact layout
+        val barcodeTextHeight = fontSize * 1.5f  // Barcode text area (minimal)
+        val skuNameHeight = if (showSkuName) fontSize * 1.3f else 0f  // SKU name area (minimal)
 
         // Gap between components
-        val gap = 2f
-        val skuNameGap = if (showSkuName) 1f else 0f  // Smaller gap before SKU name
+        val gap = 2f  // Gap after barcode image
+        val skuNameGap = 0f  // NO gap between barcode text and SKU name
 
         // Barcode dimensions - use remaining space
         val totalTextHeight = barcodeTextHeight + skuNameHeight + skuNameGap
         val barcodeHeight = usableHeight - totalTextHeight - gap
         val barcodeWidth = usableWidth
 
-        // Calculate vertical centering
+        // Calculate vertical layout - bottom-aligned text
         val totalContentHeight = if (showSkuName) {
             barcodeHeight + gap + barcodeTextHeight + skuNameGap + skuNameHeight
         } else {
             barcodeHeight + gap + barcodeTextHeight
         }
-        val verticalPadding = (usableHeight - totalContentHeight) / 2f
+        val remainingSpace = usableHeight - totalContentHeight
 
-        // Set image dimensions to fill available space
-        // CRITICAL: Use setAutoScale(false) to force exact dimensions
-        // The ZXing barcode image has padding, and auto-scale shrinks it
+        // Use Table layout for precise vertical positioning
+        val table = Table(UnitValue.createPercentArray(floatArrayOf(100f)))
+            .setWidth(UnitValue.createPercentValue(100f))
+            .setBorder(null)
+            .setPadding(0f)
+            .setMargin(0f)
+            .setHorizontalBorderSpacing(0f)  // Remove horizontal spacing
+            .setVerticalBorderSpacing(0f)     // Remove vertical spacing between cells
+
+        // Row 1: Spacer (pushes content down)
+        if (remainingSpace > 0) {
+            val spacerCell = Cell()
+                .add(Paragraph(""))
+                .setHeight(remainingSpace)
+                .setBorder(null)
+                .setPadding(0f)
+            table.addCell(spacerCell)
+        }
+
+        // Row 2: Barcode image
         image.setWidth(barcodeWidth)
         image.setHeight(barcodeHeight)
-        image.setAutoScale(false)  // FORCE exact dimensions, ignore aspect ratio
+        image.setAutoScale(false)
         image.setHorizontalAlignment(HorizontalAlignment.CENTER)
-        image.setMarginTop(Math.max(verticalPadding, 0f))  // Center vertically
-        image.setMarginBottom(gap)
 
-        // Add barcode image
-        document.add(image)
+        val barcodeCell = Cell()
+            .add(image)
+            .setHeight(barcodeHeight)
+            .setBorder(null)
+            .setPadding(0f)
+            .setVerticalAlignment(VerticalAlignment.BOTTOM)
+            .setTextAlignment(TextAlignment.CENTER)
+        table.addCell(barcodeCell)
 
-        // Add human-readable barcode text below barcode - bold and centered
+        // Row 3: Barcode text
         val textParagraph = Paragraph(barcodeText)
             .setTextAlignment(TextAlignment.CENTER)
             .setFontSize(fontSize)
-            .setMarginTop(0f)
-            .setMarginBottom(if (showSkuName) skuNameGap else 0f)
+            .setMargin(0f)
             .setBold()
 
-        document.add(textParagraph)
+        val textCell = Cell()
+            .add(textParagraph)
+            .setHeight(barcodeTextHeight)
+            .setBorder(null)
+            .setPadding(0f)
+            .setPaddingTop(gap)
+            .setPaddingBottom(0f)
+            .setVerticalAlignment(VerticalAlignment.BOTTOM)  // Align to bottom of cell
+            .setTextAlignment(TextAlignment.CENTER)
+        table.addCell(textCell)
 
-        // Add SKU name at the bottom (if available)
+        // Row 4: Tiny spacer between barcode text and SKU name (if needed)
+        if (showSkuName && skuNameGap > 0) {
+            val microSpacerCell = Cell()
+                .add(Paragraph(""))
+                .setHeight(skuNameGap)
+                .setBorder(null)
+                .setPadding(0f)
+            table.addCell(microSpacerCell)
+        }
+
+        // Row 5: SKU name (if available)
         if (showSkuName) {
             val skuNameParagraph = Paragraph(barcodeInfo.skuName)
                 .setTextAlignment(TextAlignment.CENTER)
-                .setFontSize(fontSize * 0.65f)  // Significantly smaller than barcode text
-                .setMarginTop(0f)
-                .setMarginBottom(0f)
-            // Note: Not bold to make it less prominent
+                .setFontSize(fontSize * 0.68f)
+                .setMargin(0f)
 
-            document.add(skuNameParagraph)
+            val skuNameCell = Cell()
+                .add(skuNameParagraph)
+                .setHeight(skuNameHeight)
+                .setBorder(null)
+                .setPadding(0f)
+                .setVerticalAlignment(VerticalAlignment.TOP)  // Align to top of cell
+                .setTextAlignment(TextAlignment.CENTER)
+            table.addCell(skuNameCell)
         }
+
+        document.add(table)
 
         logger.debug("Added barcode for: $barcodeText with SKU name: ${barcodeInfo.skuName ?: "N/A"} (barcode: ${barcodeWidth}x${barcodeHeight}pt, page: ${pageWidth}x${pageHeight}pt)")
     }
