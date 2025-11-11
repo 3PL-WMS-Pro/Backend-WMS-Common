@@ -170,7 +170,7 @@ class AccountService(
      * @param authToken JWT token from the request
      * @return Map of account_code to account_id
      */
-    @Cacheable(value = ["accountIdsByCodes"], key = "#accountCodes.toString() + '_' + #tenantId")
+    // @Cacheable(value = ["accountIdsByCodes"], key = "#accountCodes.toString() + '_' + #tenantId")
     fun fetchAccountIdsByCodes(
         accountCodes: List<String>,
         authToken: String,
