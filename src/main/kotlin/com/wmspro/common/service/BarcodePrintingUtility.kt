@@ -340,11 +340,14 @@ class BarcodePrintingUtility {
             mainTable.addCell(accountCell)
         }
 
-        // Section 2: Metadata row - Item Type and Received Date (with bottom border, left-aligned)
+        // Section 2: Metadata row - Item Type, Received Date, and Client Reference (with bottom border, left-aligned)
         val metadataText = buildString {
             append("Type: ${itemType.uppercase()}")
             if (!barcodeInfo.receivedDate.isNullOrBlank()) {
                 append("    |    Received: ${barcodeInfo.receivedDate}")
+            }
+            if (!barcodeInfo.clientReference.isNullOrBlank()) {
+                append("    |    Client Ref: ${barcodeInfo.clientReference}")
             }
         }
 
@@ -511,12 +514,14 @@ class BarcodePrintingUtility {
      * @param accountName The company/account name to display (optional, only for BOX/PALLET types)
      * @param accountId The account ID/code to display (optional, only for BOX/PALLET types)
      * @param receivedDate The received date to display (optional, only for BOX/PALLET types)
+     * @param clientReference The client reference to display (optional, only for BOX/PALLET types)
      */
     data class BarcodeInfo(
         val barcodeText: String,
         val skuName: String? = null,
         val accountName: String? = null,
         val accountId: String? = null,
-        val receivedDate: String? = null
+        val receivedDate: String? = null,
+        val clientReference: String? = null
     )
 }
