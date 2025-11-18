@@ -30,12 +30,11 @@ import javax.imageio.ImageIO
  *
  * This utility is used across multiple WMS services for printing barcodes on thermal printers.
  * Each barcode is rendered on a separate page with dimensions based on item type.
- * All barcodes are oriented horizontally (landscape) for better space utilization.
  *
- * Barcode Dimensions (Width × Height - Landscape):
- * - Normal Item (ITEM): 37.29mm × 25.93mm
- * - Boxes (BOX): 105mm × 74mm (A7 landscape)
- * - Pallets (PALLET): 210mm × 148mm (A5 landscape)
+ * Barcode Dimensions (Width × Height):
+ * - SKU Item (ITEM): 40mm × 30mm (landscape)
+ * - Boxes (BOX): 100mm × 100mm (square)
+ * - Pallets (PALLET): 101.6mm × 127mm (portrait)
  *
  * @return BASE64 encoded PDF string
  */
@@ -265,7 +264,7 @@ class BarcodePrintingUtility {
     /**
      * Adds structured barcode content for BOX/PALLET labels with section dividers
      * Creates a professional label layout similar to customer's sketch
-     * Optimized for horizontal/landscape orientation with full-width composition
+     * Optimized for portrait orientation with full-width composition
      */
     private fun addStructuredBarcodeContent(
         document: Document,
@@ -277,10 +276,11 @@ class BarcodePrintingUtility {
     ) {
         val barcodeText = barcodeInfo.barcodeText
 
-        // Font size based on label type (adjusted for landscape orientation)
+        // Font size based on label type (adjusted for portrait orientation)
         val fontSize = when {
-            dimensions.widthMm > 180 -> 16f  // PALLET (landscape)
-            else -> 12f   // BOX (landscape)
+            dimensions.heightMm > 120 -> 16f  // PALLET (portrait)
+            dimensions.widthMm >= 100 -> 12f  // BOX (square/portrait)
+            else -> 10f   // Default smaller size
         }
 
         // Generate barcode image
@@ -340,14 +340,11 @@ class BarcodePrintingUtility {
             mainTable.addCell(accountCell)
         }
 
-        // Section 2: Metadata row - Item Type, Received Date, and Client Reference (with bottom border, left-aligned)
+        // Section 2: Metadata row - Item Type and Received Date (with bottom border, left-aligned)
         val metadataText = buildString {
             append("Type: ${itemType.uppercase()}")
             if (!barcodeInfo.receivedDate.isNullOrBlank()) {
                 append("    |    Received: ${barcodeInfo.receivedDate}")
-            }
-            if (!barcodeInfo.clientReference.isNullOrBlank()) {
-                append("    |    Client Ref: ${barcodeInfo.clientReference}")
             }
         }
 
@@ -367,14 +364,87 @@ class BarcodePrintingUtility {
             .setTextAlignment(TextAlignment.LEFT)
         mainTable.addCell(metadataCell)
 
+        // Section 2b: Client Reference row with Box/Pallet index (with bottom border, only if present)
+        val hasClientRef = !barcodeInfo.clientReference.isNullOrBlank()
+        val hasBoxInfo = barcodeInfo.boxIndex != null && barcodeInfo.totalBoxesNum != null
+        val hasPalletInfo = barcodeInfo.palletIndex != null && barcodeInfo.totalPalletsNum != null
+
+        if (hasClientRef || hasBoxInfo || hasPalletInfo) {
+            // Build left side text (Client Reference)
+            val leftText = if (hasClientRef) {
+                "Client Ref: ${barcodeInfo.clientReference}"
+            } else {
+                ""
+            }
+
+            // Build right side text (Box or Pallet index)
+            val rightText = when {
+                hasBoxInfo -> "Box: ${barcodeInfo.boxIndex}/${barcodeInfo.totalBoxesNum}"
+                hasPalletInfo -> "Pallet: ${barcodeInfo.palletIndex}/${barcodeInfo.totalPalletsNum}"
+                else -> ""
+            }
+
+            // Create a table with 2 columns for left and right alignment
+            // 70% for client reference (can be long), 30% for box/pallet index (shorter)
+            val refTable = Table(UnitValue.createPercentArray(floatArrayOf(70f, 30f)))
+                .setWidth(UnitValue.createPercentValue(100f))
+                .setBorder(null)
+                .setPadding(0f)
+                .setMargin(0f)
+
+            // Left cell - Client Reference
+            val leftParagraph = Paragraph(leftText)
+                .setTextAlignment(TextAlignment.LEFT)
+                .setFontSize(fontSize * 0.75f)
+                .setMargin(0f)
+
+            val leftCell = Cell()
+                .add(leftParagraph)
+                .setBorder(null)
+                .setPadding(0f)
+                .setVerticalAlignment(VerticalAlignment.MIDDLE)
+            refTable.addCell(leftCell)
+
+            // Right cell - Box/Pallet index
+            val rightParagraph = Paragraph(rightText)
+                .setTextAlignment(TextAlignment.RIGHT)
+                .setFontSize(fontSize * 0.75f)
+                .setMargin(0f)
+
+            val rightCell = Cell()
+                .add(rightParagraph)
+                .setBorder(null)
+                .setPadding(0f)
+                .setVerticalAlignment(VerticalAlignment.MIDDLE)
+            refTable.addCell(rightCell)
+
+            // Add the table to main table cell
+            val clientRefCell = Cell()
+                .add(refTable)
+                .setPadding(fontSize * 0.35f)
+                .setPaddingLeft(fontSize * 0.5f)
+                .setPaddingRight(fontSize * 0.5f)
+                .setBorderTop(null)
+                .setBorderLeft(null)
+                .setBorderRight(null)
+                .setBorderBottom(com.itextpdf.layout.borders.SolidBorder(borderColor, borderWidth))
+            mainTable.addCell(clientRefCell)
+        }
+
         // Section 3: Combined Barcode Image + Text (vertically centered in remaining space)
-        // For landscape orientation, use available vertical space and center everything
+        // For portrait orientation, use available vertical space and center everything
         // Calculate header height including padding and borders:
         // Account section: fontSize * 1.0f + (fontSize * 0.4f * 2 padding) + borderWidth
         // Metadata section: fontSize * 0.75f + (fontSize * 0.35f * 2 padding) + borderWidth
+        // Client Ref section (optional): fontSize * 0.75f + (fontSize * 0.35f * 2 padding) + borderWidth
         val accountSectionHeight = (fontSize * 1.0f) + (fontSize * 0.4f * 2) + borderWidth
         val metadataSectionHeight = (fontSize * 0.75f) + (fontSize * 0.35f * 2) + borderWidth
-        val headerHeight = accountSectionHeight + metadataSectionHeight
+        val clientRefSectionHeight = if (hasClientRef || hasBoxInfo || hasPalletInfo) {
+            (fontSize * 0.75f) + (fontSize * 0.35f * 2) + borderWidth
+        } else {
+            0f
+        }
+        val headerHeight = accountSectionHeight + metadataSectionHeight + clientRefSectionHeight
         val remainingHeight = usableHeight - headerHeight
 
         val barcodeTextHeight = fontSize * 1.1f * 1.5f  // Text height
@@ -440,7 +510,7 @@ class BarcodePrintingUtility {
 
     /**
      * Generates a Code128 barcode image
-     * Optimized for horizontal scanning with proper aspect ratio
+     * SKU items use landscape, BOX/PALLET use portrait/square with proper aspect ratio
      */
     private fun generateBarcodeImage(barcodeText: String, dimensions: BarcodeDimensions): BufferedImage {
         val writer = Code128Writer()
@@ -449,21 +519,22 @@ class BarcodePrintingUtility {
         // For thermal printers, we want high resolution
         val widthPixels = ((dimensions.widthMm / 25.4) * PRINTER_DPI).toInt()
 
-        // For CODE_128, height should be proportional to create a horizontal barcode
-        // Small items need short barcodes (horizontal look but with good scannability), larger items can be taller
+        // For CODE_128, height should be proportional based on label type
+        // SKU items use landscape, BOX/PALLET use portrait orientation
         val heightPixels = when {
-            dimensions.widthMm < 50 -> {
-                // Small items: Use absolute pixel height for horizontal barcode with good scannability
-                // Increased from 10mm to 13mm for better space utilization
-                ((13.0 / 25.4) * PRINTER_DPI).toInt()  // 13mm height = ~104 pixels
+            dimensions.widthMm <= 40 -> {
+                // SKU items (40x30mm landscape): Use fixed height for good scannability
+                // Optimized for compact landscape labels
+                ((12.0 / 25.4) * PRINTER_DPI).toInt()  // 12mm height for barcode
             }
-            dimensions.widthMm < 120 -> {
-                // Medium items (BOX): Reduced from 35% to 28% to make room for account name text
-                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.28).toInt()
+            dimensions.widthMm >= 100 && dimensions.heightMm >= 100 -> {
+                // BOX (100x100mm) and PALLET (101.6x127mm): Proportional height
+                // Use 30% of available height for barcode to leave room for text and metadata
+                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.30).toInt()
             }
             else -> {
-                // Large items (PALLET): Reduced from 40% to 32% to make room for account name text
-                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.32).toInt()
+                // Fallback for any other sizes
+                ((dimensions.heightMm / 25.4) * PRINTER_DPI * 0.35).toInt()
             }
         }
 
@@ -484,16 +555,16 @@ class BarcodePrintingUtility {
 
     /**
      * Returns barcode dimensions based on item type
-     * All types use landscape/horizontal orientation
+     * SKU items use landscape, BOX is square, PALLET is portrait
      */
     private fun getBarcodeDimensions(itemType: String): BarcodeDimensions {
         return when (itemType.uppercase()) {
-            "ITEM", "SKU_ITEM" -> BarcodeDimensions(widthMm = 37.29f, heightMm = 25.93f)  // Landscape
-            "BOX" -> BarcodeDimensions(widthMm = 105f, heightMm = 74f)  // A7 landscape
-            "PALLET" -> BarcodeDimensions(widthMm = 210f, heightMm = 148f)  // A5 landscape
+            "ITEM", "SKU_ITEM" -> BarcodeDimensions(widthMm = 40f, heightMm = 30f)  // Landscape
+            "BOX" -> BarcodeDimensions(widthMm = 100f, heightMm = 100f)  // Square
+            "PALLET" -> BarcodeDimensions(widthMm = 101.6f, heightMm = 127f)  // Portrait
             else -> {
                 logger.warn("Unknown item type: $itemType, using default ITEM dimensions")
-                BarcodeDimensions(widthMm = 37.29f, heightMm = 25.93f)
+                BarcodeDimensions(widthMm = 40f, heightMm = 30f)
             }
         }
     }
@@ -515,6 +586,10 @@ class BarcodePrintingUtility {
      * @param accountId The account ID/code to display (optional, only for BOX/PALLET types)
      * @param receivedDate The received date to display (optional, only for BOX/PALLET types)
      * @param clientReference The client reference to display (optional, only for BOX/PALLET types)
+     * @param boxIndex The current box index (optional, only for BOX types)
+     * @param totalBoxesNum The total number of boxes (optional, only for BOX types)
+     * @param palletIndex The current pallet index (optional, only for PALLET types)
+     * @param totalPalletsNum The total number of pallets (optional, only for PALLET types)
      */
     data class BarcodeInfo(
         val barcodeText: String,
@@ -522,6 +597,10 @@ class BarcodePrintingUtility {
         val accountName: String? = null,
         val accountId: String? = null,
         val receivedDate: String? = null,
-        val clientReference: String? = null
+        val clientReference: String? = null,
+        val boxIndex: Int? = null,
+        val totalBoxesNum: Int? = null,
+        val palletIndex: Int? = null,
+        val totalPalletsNum: Int? = null
     )
 }
