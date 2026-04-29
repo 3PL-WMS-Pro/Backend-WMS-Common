@@ -1,25 +1,33 @@
 package com.wmspro.common.service
 
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.wmspro.common.external.freighai.client.FreighAiUserClient
+import com.wmspro.common.external.freighai.parser.FreighAiUserParser
 import com.wmspro.common.tenant.TenantContext
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.cache.annotation.Cacheable
-import org.springframework.http.*
 import org.springframework.stereotype.Service
-import org.springframework.web.client.RestTemplate
-import org.springframework.web.client.RestClientException
 
+/**
+ * UserService — resolves user emails to display names from the external user-master
+ * provider. WMS warehouse documents track activity by email (`receivingStaff`,
+ * `assignedTo`, `createdBy`, `statusHistory[].changedBy`, etc.); this service maps
+ * those emails to the human-readable name shown in the UI.
+ *
+ * Migration history (D2 / D14):
+ *   - Pre-2026-04-29: HTTP-direct to leadtorev `/users/get/email-to-fullname-mapping`.
+ *   - Phase 4 onwards: routes through FreighAi's POST `/api/v1/users/batch-by-emails`.
+ *
+ * Email is the join key on both sides (no ID translation needed since the same emails
+ * exist in both leadtorev and FreighAi for Infinity Logistics' staff). Public method
+ * signatures, return types, and @Cacheable keys are unchanged.
+ */
 @Service
 class UserService(
-    private val restTemplate: RestTemplate,
-    private val objectMapper: ObjectMapper
+    private val freighAiUserClient: FreighAiUserClient,
+    private val freighAiUserParser: FreighAiUserParser
 ) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
-
-    @Value("\${app.external-api.user-service.url:https://cloud.leadtorev.com/users/get/email-to-fullname-mapping}")
-    private lateinit var userServiceUrl: String
 
     data class UserFullNameRequest(
         val emails: List<String>
@@ -32,11 +40,10 @@ class UserService(
     )
 
     /**
-     * Fetches user full names for the given email addresses from external API
+     * Fetches user full names for the given email addresses.
      *
-     * @param emails List of user emails to fetch names for
-     * @param authToken JWT token from the request
-     * @return Map of email to full name
+     * @return Map of email → full name. Emails without a matching FreighAi user are
+     *         silently omitted from the map.
      */
     @Cacheable(value = ["userFullNames"], key = "#emails.toString() + '_' + #tenantId")
     fun fetchUserFullNames(
@@ -45,55 +52,24 @@ class UserService(
         tenantId: String = TenantContext.getCurrentTenant() ?: ""
     ): Map<String, String> {
 
-        if (emails.isEmpty()) {
-            return emptyMap()
-        }
+        if (emails.isEmpty()) return emptyMap()
 
-        logger.debug("Fetching user full names for emails: {} for tenant: {}", emails, tenantId)
+        logger.debug("Fetching user full names for emails: {} (tenant {})", emails, tenantId)
 
-        try {
-            val headers = HttpHeaders()
-            headers.contentType = MediaType.APPLICATION_JSON
-            headers["X-Client"] = tenantId
-            headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
-
-            val requestBody = UserFullNameRequest(emails = emails)
-            val entity = HttpEntity(requestBody, headers)
-
-            val response = restTemplate.exchange(
-                userServiceUrl,
-                HttpMethod.POST,
-                entity,
-                String::class.java
-            )
-
-            if (response.statusCode == HttpStatus.OK) {
-                val userResponse = objectMapper.readValue(response.body, UserFullNameResponse::class.java)
-
-                if (userResponse.success && userResponse.data != null) {
-                    logger.debug("Successfully fetched {} user full names", userResponse.data.size)
-                    return userResponse.data
-                } else {
-                    logger.warn("User full name fetch was not successful: {}", userResponse.message)
-                    return emptyMap()
-                }
-            } else {
-                logger.error("Failed to fetch user full names. Status: {}", response.statusCode)
-                return emptyMap()
-            }
-
-        } catch (e: RestClientException) {
-            logger.error("Error fetching user full names from external API", e)
-            return emptyMap()
+        return try {
+            val emailToName = freighAiUserClient.batchByEmails(emails, authToken)
+            val response = freighAiUserParser.toUserFullNameResponse(emailToName)
+            response.data ?: emptyMap()
         } catch (e: Exception) {
-            logger.error("Unexpected error while fetching user full names", e)
-            return emptyMap()
+            logger.error("Unexpected error fetching user full names (input size={})", emails.size, e)
+            emptyMap()
         }
     }
 
     /**
-     * Enriches a list of objects with user full names
-     * Assumes objects have an email field
+     * Convenience helper: enriches a list of arbitrary objects with user full names
+     * by looking up via emailExtractor and writing back via fullNameSetter.
+     * Unchanged from previous implementation.
      */
     fun <T> enrichWithUserFullNames(
         items: List<T>,
@@ -101,21 +77,16 @@ class UserService(
         fullNameSetter: (T, String?) -> Unit,
         authToken: String
     ): List<T> {
-        val uniqueEmails = items
-            .mapNotNull(emailExtractor)
-            .distinct()
+        val uniqueEmails = items.mapNotNull(emailExtractor).distinct()
 
-        if (uniqueEmails.isEmpty()) {
-            return items
-        }
+        if (uniqueEmails.isEmpty()) return items
 
         val userFullNames = fetchUserFullNames(uniqueEmails, authToken)
 
         items.forEach { item ->
             val email = emailExtractor(item)
             if (email != null) {
-                val fullName = userFullNames[email]
-                fullNameSetter(item, fullName)
+                fullNameSetter(item, userFullNames[email])
             }
         }
 

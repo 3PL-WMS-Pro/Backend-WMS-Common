@@ -1,31 +1,36 @@
 package com.wmspro.common.service
 
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.wmspro.common.external.freighai.client.AccountIdMappingClient
+import com.wmspro.common.external.freighai.client.FreighAiCustomerClient
+import com.wmspro.common.external.freighai.parser.FreighAiAccountParser
 import com.wmspro.common.tenant.TenantContext
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.cache.annotation.Cacheable
-import org.springframework.http.*
 import org.springframework.stereotype.Service
-import org.springframework.web.client.RestTemplate
-import org.springframework.web.client.RestClientException
 
+/**
+ * AccountService — resolves WMS account IDs (Long, leadtorev-derived, persisted on
+ * existing WMS warehouse documents) to customer names and codes from the external
+ * customer-master provider.
+ *
+ * Migration history (D2 / D3 / D14 in MIGRATION.md):
+ *   - Pre-2026-04-29: HTTP-direct to leadtorev (cloud.leadtorev.com) via RestTemplate.
+ *   - Phase 4 onwards: routes through FreighAi via the parser layer.
+ *     1. AccountIdMappingClient resolves Long ↔ String IDs (talks to wms-tenant-service).
+ *     2. FreighAiCustomerClient hits FreighAi's batch endpoints.
+ *     3. FreighAiAccountParser translates FreighAi DTOs → existing WMS shapes.
+ *
+ * Public method signatures, return types, and @Cacheable keys are unchanged so the
+ * 32+ downstream services consuming this class continue to work without code changes.
+ */
 @Service
 class AccountService(
-    private val restTemplate: RestTemplate,
-    private val objectMapper: ObjectMapper
+    private val accountIdMappingClient: AccountIdMappingClient,
+    private val freighAiCustomerClient: FreighAiCustomerClient,
+    private val freighAiAccountParser: FreighAiAccountParser
 ) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
-
-    @Value("\${app.external-api.account-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-names}")
-    private lateinit var accountServiceUrl: String
-
-    @Value("\${app.external-api.account-code-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-codes}")
-    private lateinit var accountCodeServiceUrl: String
-
-    @Value("\${app.external-api.account-ids-by-codes-service.url:https://cloud.leadtorev.com/clients/accounts/retrieve/account-ids-by-codes}")
-    private lateinit var accountIdsByCodesServiceUrl: String
 
     data class AccountNamesResponse(
         val success: Boolean,
@@ -46,11 +51,14 @@ class AccountService(
     )
 
     /**
-     * Fetches account names for the given account IDs from external API
+     * Fetches account names for the given account IDs from the external customer-master.
      *
-     * @param accountIds List of account IDs to fetch names for
-     * @param authToken JWT token from the request
-     * @return Map of account_id to account_name
+     * @param accountIds  WMS account IDs (leadtorev-derived Longs already on WMS docs)
+     * @param authToken   FreighAi JWT (Bearer token) — forwarded from the request
+     * @param tenantId    WMS tenant id (e.g. "199") — used by the mapping client to
+     *                    select the right per-tenant DB on tenant-service
+     * @return Map of accountId (String) → account name. Misses (no mapping or no
+     *         FreighAi customer) are silently omitted from the map.
      */
     @Cacheable(value = ["accountNames"], key = "#accountIds.toString() + '_' + #tenantId")
     fun fetchAccountNames(
@@ -59,57 +67,35 @@ class AccountService(
         tenantId: String = TenantContext.getCurrentTenant() ?: ""
     ): Map<String, String> {
 
-        if (accountIds.isEmpty()) {
-            return emptyMap()
-        }
+        if (accountIds.isEmpty()) return emptyMap()
 
-        logger.debug("Fetching account names for IDs: {} for tenant: {}", accountIds, tenantId)
+        logger.debug("Fetching account names for IDs: {} (tenant {})", accountIds, tenantId)
 
-        try {
-            val headers = HttpHeaders()
-            headers.contentType = MediaType.APPLICATION_JSON
-            headers["X-Client"] = tenantId
-            headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
-
-            val entity = HttpEntity(accountIds, headers)
-
-            val response = restTemplate.exchange(
-                accountServiceUrl,
-                HttpMethod.POST,
-                entity,
-                String::class.java
-            )
-
-            if (response.statusCode == HttpStatus.OK) {
-                val accountResponse = objectMapper.readValue(response.body, AccountNamesResponse::class.java)
-
-                if (accountResponse.success && accountResponse.data != null) {
-                    logger.debug("Successfully fetched {} account names", accountResponse.data.size)
-                    return accountResponse.data
-                } else {
-                    logger.warn("Account name fetch was not successful: {}", accountResponse.message)
-                    return emptyMap()
-                }
-            } else {
-                logger.error("Failed to fetch account names. Status: {}", response.statusCode)
+        return try {
+            val mapping = accountIdMappingClient.batchGetByLeadtorevIds(accountIds, tenantId)
+            if (mapping.isEmpty()) {
+                logger.warn(
+                    "No leadtorev→FreighAi mappings found for {} account IDs (tenant {}); returning empty map",
+                    accountIds.size, tenantId
+                )
                 return emptyMap()
             }
 
-        } catch (e: RestClientException) {
-            logger.error("Error fetching account names from external API", e)
-            return emptyMap()
+            val freighaiIds = mapping.values.map { it.freighaiCustomerId }.distinct()
+            val customers = freighAiCustomerClient.batchByIds(freighaiIds, authToken)
+
+            val response = freighAiAccountParser.toAccountNamesResponse(accountIds, mapping, customers)
+            response.data ?: emptyMap()
         } catch (e: Exception) {
-            logger.error("Unexpected error while fetching account names", e)
-            return emptyMap()
+            logger.error("Unexpected error fetching account names (input size={})", accountIds.size, e)
+            emptyMap()
         }
     }
 
     /**
-     * Fetches account codes for the given account IDs from external API
-     *
-     * @param accountIds List of account IDs to fetch codes for
-     * @param authToken JWT token from the request
-     * @return Map of account_id to account_code
+     * Fetches account codes for the given account IDs from the external customer-master.
+     * After Phase 1 backfill, FreighAi customers carry the same accountCode that
+     * leadtorev did, so historical printed barcode labels remain valid.
      */
     @Cacheable(value = ["accountCodes"], key = "#accountIds.toString() + '_' + #tenantId")
     fun fetchAccountCodes(
@@ -118,113 +104,71 @@ class AccountService(
         tenantId: String = TenantContext.getCurrentTenant() ?: ""
     ): Map<String, String> {
 
-        if (accountIds.isEmpty()) {
-            return emptyMap()
-        }
+        if (accountIds.isEmpty()) return emptyMap()
 
-        logger.debug("Fetching account codes for IDs: {} for tenant: {}", accountIds, tenantId)
+        logger.debug("Fetching account codes for IDs: {} (tenant {})", accountIds, tenantId)
 
-        try {
-            val headers = HttpHeaders()
-            headers.contentType = MediaType.APPLICATION_JSON
-            headers["X-Client"] = tenantId
-            headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
-
-            val entity = HttpEntity(accountIds, headers)
-
-            val response = restTemplate.exchange(
-                accountCodeServiceUrl,
-                HttpMethod.POST,
-                entity,
-                String::class.java
-            )
-
-            if (response.statusCode == HttpStatus.OK) {
-                val accountResponse = objectMapper.readValue(response.body, AccountCodesResponse::class.java)
-
-                if (accountResponse.success && accountResponse.data != null) {
-                    logger.debug("Successfully fetched {} account codes", accountResponse.data.size)
-                    return accountResponse.data
-                } else {
-                    logger.warn("Account code fetch was not successful: {}", accountResponse.message)
-                    return emptyMap()
-                }
-            } else {
-                logger.error("Failed to fetch account codes. Status: {}", response.statusCode)
+        return try {
+            val mapping = accountIdMappingClient.batchGetByLeadtorevIds(accountIds, tenantId)
+            if (mapping.isEmpty()) {
+                logger.warn(
+                    "No leadtorev→FreighAi mappings found for {} account IDs (tenant {}); returning empty map",
+                    accountIds.size, tenantId
+                )
                 return emptyMap()
             }
 
-        } catch (e: RestClientException) {
-            logger.error("Error fetching account codes from external API", e)
-            return emptyMap()
+            val freighaiIds = mapping.values.map { it.freighaiCustomerId }.distinct()
+            val customers = freighAiCustomerClient.batchByIds(freighaiIds, authToken)
+
+            val response = freighAiAccountParser.toAccountCodesResponse(accountIds, mapping, customers)
+            response.data ?: emptyMap()
         } catch (e: Exception) {
-            logger.error("Unexpected error while fetching account codes", e)
-            return emptyMap()
+            logger.error("Unexpected error fetching account codes (input size={})", accountIds.size, e)
+            emptyMap()
         }
     }
 
     /**
-     * Fetches account IDs for the given account codes from external API
-     *
-     * @param accountCodes List of account codes to fetch IDs for
-     * @param authToken JWT token from the request
-     * @return Map of account_code to account_id
+     * Reverse lookup: given a list of account codes, return matching leadtorev account IDs.
      */
-    // @Cacheable(value = ["accountIdsByCodes"], key = "#accountCodes.toString() + '_' + #tenantId")
     fun fetchAccountIdsByCodes(
         accountCodes: List<String>,
         authToken: String,
         tenantId: String = TenantContext.getCurrentTenant() ?: ""
     ): Map<String, Long> {
 
-        if (accountCodes.isEmpty()) {
-            return emptyMap()
-        }
+        if (accountCodes.isEmpty()) return emptyMap()
 
-        logger.debug("Fetching account IDs for codes: {} for tenant: {}", accountCodes, tenantId)
+        logger.debug("Fetching account IDs for codes: {} (tenant {})", accountCodes, tenantId)
 
-        try {
-            val headers = HttpHeaders()
-            headers.contentType = MediaType.APPLICATION_JSON
-            headers["X-Client"] = tenantId
-            headers["Authorization"] = if (authToken.startsWith("Bearer ")) authToken else "Bearer $authToken"
-
-            val entity = HttpEntity(accountCodes, headers)
-
-            val response = restTemplate.exchange(
-                accountIdsByCodesServiceUrl,
-                HttpMethod.POST,
-                entity,
-                String::class.java
-            )
-
-            if (response.statusCode == HttpStatus.OK) {
-                val accountResponse = objectMapper.readValue(response.body, AccountIdsByCodesResponse::class.java)
-
-                if (accountResponse.success && accountResponse.data != null) {
-                    logger.debug("Successfully fetched {} account IDs", accountResponse.data.size)
-                    return accountResponse.data
-                } else {
-                    logger.warn("Account IDs fetch was not successful: {}", accountResponse.message)
-                    return emptyMap()
-                }
-            } else {
-                logger.error("Failed to fetch account IDs. Status: {}", response.statusCode)
+        return try {
+            val customers = freighAiCustomerClient.batchByCodes(accountCodes, authToken)
+            if (customers.isEmpty()) {
+                logger.warn(
+                    "No FreighAi customers matched {} accountCodes (tenant {}); returning empty map",
+                    accountCodes.size, tenantId
+                )
                 return emptyMap()
             }
 
-        } catch (e: RestClientException) {
-            logger.error("Error fetching account IDs from external API", e)
-            return emptyMap()
+            val freighaiIds = customers.values.map { it.customerId }.distinct()
+            val leadtorevByFreighaiId = accountIdMappingClient.batchGetByFreighaiIds(freighaiIds, tenantId)
+
+            val response = freighAiAccountParser.toAccountIdsByCodesResponse(
+                accountCodes, customers, leadtorevByFreighaiId
+            )
+            response.data ?: emptyMap()
         } catch (e: Exception) {
-            logger.error("Unexpected error while fetching account IDs", e)
-            return emptyMap()
+            logger.error("Unexpected error fetching account IDs by codes (input size={})", accountCodes.size, e)
+            emptyMap()
         }
     }
 
     /**
-     * Enriches a list of objects with account names
-     * Assumes objects have an 'account_id' field
+     * Convenience helper: enriches a list of arbitrary objects with account names by
+     * looking up via accountIdExtractor and writing back via accountNameSetter.
+     * Unchanged from previous implementation.
      */
     fun <T> enrichWithAccountNames(
         items: List<T>,
@@ -232,21 +176,16 @@ class AccountService(
         accountNameSetter: (T, String?) -> Unit,
         authToken: String
     ): List<T> {
-        val uniqueAccountIds = items
-            .mapNotNull(accountIdExtractor)
-            .distinct()
+        val uniqueAccountIds = items.mapNotNull(accountIdExtractor).distinct()
 
-        if (uniqueAccountIds.isEmpty()) {
-            return items
-        }
+        if (uniqueAccountIds.isEmpty()) return items
 
         val accountNames = fetchAccountNames(uniqueAccountIds, authToken)
 
         items.forEach { item ->
             val accountId = accountIdExtractor(item)
             if (accountId != null) {
-                val accountName = accountNames[accountId.toString()]
-                accountNameSetter(item, accountName)
+                accountNameSetter(item, accountNames[accountId.toString()])
             }
         }
 
