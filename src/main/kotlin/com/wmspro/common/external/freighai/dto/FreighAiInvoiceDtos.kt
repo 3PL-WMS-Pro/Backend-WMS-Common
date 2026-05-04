@@ -42,7 +42,9 @@ data class FreighAiInvoiceLineItem(
     val quantity: BigDecimal,
     val unit: String,
     val unitPrice: BigDecimal,
-    val chargeTypeId: String
+    val chargeTypeId: String,
+    val vatPercent: BigDecimal? = null,
+    val vatAmount: BigDecimal? = null
 )
 
 /**
