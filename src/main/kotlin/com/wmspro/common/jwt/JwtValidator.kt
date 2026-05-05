@@ -1,19 +1,13 @@
 package com.wmspro.common.jwt
 
-import io.jsonwebtoken.Claims
-import io.jsonwebtoken.Jwts
 import org.springframework.stereotype.Component
 import java.util.*
 
 @Component
-class JwtValidator {
-    
-    companion object {
-        private const val SECRET_KEY = "#FlyBizDigital###LordsOfMarket@2022###LeadToRev@@@2022#"
-    }
-    
-    private val tokenExtractor = JwtTokenExtractor()
-    
+class JwtValidator(
+    private val tokenExtractor: JwtTokenExtractor
+) {
+
     fun validateToken(token: String, username: String): Boolean {
         val extractedUsername = tokenExtractor.extractUsername(token)
         return extractedUsername != null && 
