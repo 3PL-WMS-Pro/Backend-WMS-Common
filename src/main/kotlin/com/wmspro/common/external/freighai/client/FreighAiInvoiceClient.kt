@@ -6,6 +6,7 @@ import com.wmspro.common.external.freighai.dto.ApiEnvelope
 import com.wmspro.common.external.freighai.dto.CreateFreighAiInvoiceRequest
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceListItem
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceResponse
+import com.wmspro.common.external.freighai.dto.UpdateFreighAiInvoiceRequest
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpEntity
@@ -14,6 +15,7 @@ import org.springframework.http.HttpMethod
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
+import org.springframework.web.client.HttpStatusCodeException
 import org.springframework.web.client.RestClientException
 import org.springframework.web.client.RestTemplate
 import org.springframework.web.util.UriComponentsBuilder
@@ -120,6 +122,101 @@ class FreighAiInvoiceClient(
         }
     }
 
+    /**
+     * Replace the line items on an existing FreighAi invoice.
+     *
+     * FreighAi permits this on **DRAFT invoices only** (`InvoiceService.update`
+     * guards on status) and recomputes subtotal / VAT / grand total from the
+     * submitted lines, then rebuilds the paired voucher. Callers that need to
+     * edit a SENT invoice must call [revertToDraft] first.
+     *
+     * Unlike the other methods here, failures are NOT flattened to null: the
+     * caller has to distinguish "period is closed", "status is not DRAFT" and
+     * "transport error" to give the admin an actionable message, so FreighAi's
+     * own error text is preserved through [InvoiceUpdateResult.Failure].
+     */
+    fun updateInvoice(
+        invoiceId: String,
+        request: UpdateFreighAiInvoiceRequest,
+        authToken: String
+    ): InvoiceUpdateResult {
+        val url = "$baseUrl/api/v1/invoices/$invoiceId"
+        return try {
+            val response = restTemplate.exchange(
+                url, HttpMethod.PUT, HttpEntity(request, buildHeaders(authToken)), String::class.java
+            )
+            val envelope = objectMapper.readValue(
+                response.body,
+                object : TypeReference<ApiEnvelope<FreighAiInvoiceResponse>>() {}
+            )
+            if (!envelope.success || envelope.data == null) {
+                InvoiceUpdateResult.Failure(envelope.message ?: "FreighAi returned success=false with no data")
+            } else {
+                InvoiceUpdateResult.Success(envelope.data)
+            }
+        } catch (e: HttpStatusCodeException) {
+            val msg = extractEnvelopeMessage(e.responseBodyAsString)
+                ?: "FreighAi returned ${e.statusCode}"
+            logger.error("FreighAi updateInvoice {} rejected: {}", invoiceId, msg)
+            InvoiceUpdateResult.Failure(msg)
+        } catch (e: RestClientException) {
+            // No HTTP status came back, so the request may well have been
+            // applied — the response was simply lost. Callers must not assume
+            // this means "nothing happened".
+            logger.error("FreighAi updateInvoice {} transport error", invoiceId, e)
+            InvoiceUpdateResult.Indeterminate("Transport error: ${e.message}")
+        } catch (e: Exception) {
+            logger.error("FreighAi updateInvoice {} unexpected error", invoiceId, e)
+            InvoiceUpdateResult.Indeterminate("Unexpected error: ${e.message}")
+        }
+    }
+
+    /**
+     * Pull a SENT Sales Invoice back to DRAFT so its lines can be edited.
+     *
+     * FreighAi reverts the paired voucher first; that voucher's allocation
+     * guard refuses the revert when any payment has been allocated against the
+     * invoice, which is exactly the protection WMS wants — a part-paid invoice
+     * must never be silently rewritten. The refusal arrives as a 4xx whose
+     * message is surfaced verbatim.
+     */
+    fun revertToDraft(invoiceId: String, remarks: String?, authToken: String): RevertResult {
+        val url = "$baseUrl/api/v1/invoices/$invoiceId/revert-to-draft"
+        return try {
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.POST,
+                HttpEntity(mapOf("remarks" to remarks).filterValues { it != null }, buildHeaders(authToken)),
+                String::class.java
+            )
+            if (response.statusCode.is2xxSuccessful) RevertResult.Success
+            else RevertResult.Failure("FreighAi returned ${response.statusCode}")
+        } catch (e: HttpStatusCodeException) {
+            val msg = extractEnvelopeMessage(e.responseBodyAsString)
+                ?: "FreighAi returned ${e.statusCode}"
+            logger.error("FreighAi revertToDraft {} rejected: {}", invoiceId, msg)
+            RevertResult.Failure(msg)
+        } catch (e: Exception) {
+            logger.error("FreighAi revertToDraft {} error", invoiceId, e)
+            RevertResult.Failure(e.message ?: "transport error")
+        }
+    }
+
+    /**
+     * Pull `message` out of a FreighAi error envelope so the admin sees the
+     * real reason ("fiscal period 2026-4 is CLOSED") instead of a bare 409.
+     * Returns null when the body isn't a parseable envelope.
+     */
+    private fun extractEnvelopeMessage(body: String?): String? {
+        if (body.isNullOrBlank()) return null
+        return try {
+            objectMapper.readTree(body)?.get("message")?.asText()?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            logger.debug("Could not parse FreighAi error envelope: {}", e.message)
+            null
+        }
+    }
+
     fun getInvoice(invoiceId: String, authToken: String): FreighAiInvoiceResponse? {
         val url = "$baseUrl/api/v1/invoices/$invoiceId"
         return try {
@@ -149,7 +246,7 @@ class FreighAiInvoiceClient(
      * (idempotent). Returns `false` on any other failure — caller decides
      * whether to retry or escalate.
      */
-    fun cancelInvoice(invoiceId: String, reason: String, authToken: String): Boolean {
+    fun cancelInvoice(invoiceId: String, reason: String, authToken: String): CancelResult {
         val url = "$baseUrl/api/v1/invoices/$invoiceId/cancel"
         return try {
             val response = restTemplate.exchange(
@@ -157,10 +254,19 @@ class FreighAiInvoiceClient(
                 HttpEntity(mapOf("reason" to reason), buildHeaders(authToken)),
                 String::class.java
             )
-            response.statusCode.is2xxSuccessful
+            if (response.statusCode.is2xxSuccessful) CancelResult.Success
+            else CancelResult.Rejected("FreighAi returned ${response.statusCode}")
+        } catch (e: HttpStatusCodeException) {
+            // FreighAi answered and said no — almost always "cannot cancel a
+            // SENT/PAID invoice, create a Credit Note instead". The caller needs
+            // this text; swallowing it is what let WMS and FreighAi drift apart.
+            val msg = extractEnvelopeMessage(e.responseBodyAsString)
+                ?: "FreighAi returned ${e.statusCode}"
+            logger.warn("FreighAi cancelInvoice {} rejected: {}", invoiceId, msg)
+            CancelResult.Rejected(msg)
         } catch (e: Exception) {
             logger.error("FreighAi cancelInvoice {} error", invoiceId, e)
-            false
+            CancelResult.Unreachable(e.message ?: "transport error")
         }
     }
 
@@ -254,6 +360,45 @@ sealed class InvoiceCreationResult {
 sealed class SendResult {
     object Success : SendResult()
     data class Failure(val errorMessage: String) : SendResult()
+}
+
+/**
+ * Result of [FreighAiInvoiceClient.updateInvoice]. Carries FreighAi's own
+ * message on failure so the caller can distinguish a closed fiscal period
+ * from a status conflict and tell the admin what to do about it.
+ */
+sealed class InvoiceUpdateResult {
+    data class Success(val invoice: FreighAiInvoiceResponse) : InvoiceUpdateResult()
+
+    /** FreighAi answered and definitively rejected the update. Nothing changed. */
+    data class Failure(val errorMessage: String) : InvoiceUpdateResult()
+
+    /**
+     * No usable answer came back (timeout, connection reset). The update may or
+     * may not have been applied, so the caller must NOT run a compensating
+     * action that assumes either outcome.
+     */
+    data class Indeterminate(val errorMessage: String) : InvoiceUpdateResult()
+}
+
+/** Result of [FreighAiInvoiceClient.revertToDraft]. */
+sealed class RevertResult {
+    object Success : RevertResult()
+    data class Failure(val errorMessage: String) : RevertResult()
+}
+
+/**
+ * Result of [FreighAiInvoiceClient.cancelInvoice].
+ *
+ * [Rejected] and [Unreachable] are separate because they call for different
+ * handling: a rejection is FreighAi telling us the invoice cannot be cancelled
+ * (it has been issued — raise a credit note instead), whereas unreachable means
+ * we simply don't know. Neither is safe to treat as "cancelled anyway".
+ */
+sealed class CancelResult {
+    object Success : CancelResult()
+    data class Rejected(val errorMessage: String) : CancelResult()
+    data class Unreachable(val errorMessage: String) : CancelResult()
 }
 
 /**
