@@ -30,11 +30,44 @@ class JwtTokenExtractor(
 
     private val objectMapper = ObjectMapper()
 
-    fun extractUsername(token: String): String? {
+    /**
+     * The acting user's identity, for audit and attribution.
+     *
+     * Reads the `email` claim, falling back to `sub`.
+     *
+     * Every WMS document that records a user — `StatusHistory.changedBy`,
+     * `receivingStaff`, `assignedTo`, `pickedBy`, `createdBy` — stores an email,
+     * and `UserService.fetchUserFullNames` resolves those against FreighAi's
+     * `/users/batch-by-emails` to render display names. FreighAi's `sub` is the
+     * opaque user id (`user_41a4d54161b6`), which resolves to nothing.
+     *
+     * Between 2026-05-05 — when `61821c4` corrected the signing secret and
+     * extraction started succeeding instead of returning null — and this change,
+     * 167 production documents in `wms_pro_tenant_199` were written with `user_*`
+     * values in email-typed fields, rendering blank names in both clients.
+     *
+     * The `sub` fallback keeps legacy leadtorev tokens working, whose subject
+     * WAS the email.
+     */
+    fun extractUsername(token: String): String? = extractEmail(token)
+
+    /** Explicit alias for [extractUsername]. Prefer this name in new code. */
+    fun extractEmail(token: String): String? {
+        val localToken = token.replace("Bearer ", "")
+        return extractClaim(localToken) { claims ->
+            (claims["email"] as? String)?.takeIf { it.isNotBlank() } ?: claims.subject
+        }
+    }
+
+    /**
+     * The raw JWT subject — FreighAi's opaque user id. Almost never what you want
+     * for attribution; see [extractEmail].
+     */
+    fun extractSubject(token: String): String? {
         val localToken = token.replace("Bearer ", "")
         return extractClaim(localToken) { it.subject }
     }
-    
+
     fun extractUserType(token: String): Long? {
         val localToken = token.replace("Bearer ", "")
         return extractClaim(localToken) { it["userTypeId"] as? Long }
