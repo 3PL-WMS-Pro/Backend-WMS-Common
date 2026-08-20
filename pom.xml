@@ -110,6 +110,30 @@
 			<artifactId>spring-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!--
+			Apache POI, for DocumentExcelWriter. Declared here rather than separately in the Inbound
+			and Order services so GRN and GIN workbooks are produced by one piece of code and cannot
+			drift apart. Version matches the Inventory Service, which already uses POI for the
+			Live Stock and Stock Movement reports.
+
+			Optional, so it does not leak transitively. Ten modules depend on wms-common and only
+			two of them write spreadsheets; without this, POI and xmlbeans (~14MB) would be packed
+			into the Tenant, Product, Task, File, Warehouse, QC and Customer-Portal jars and images
+			for code none of them can reach. The Inbound and Order poms declare POI explicitly.
+		-->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi</artifactId>
+			<version>5.2.5</version>
+			<optional>true</optional>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>5.2.5</version>
+			<optional>true</optional>
+		</dependency>
 	</dependencies>
 
 	<build>
