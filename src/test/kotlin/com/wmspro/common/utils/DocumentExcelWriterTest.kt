@@ -356,4 +356,82 @@ class DocumentExcelWriterTest {
         )
         assertEquals(null, DocumentExcelWriter.formatDate(null as java.time.LocalDateTime?))
     }
+
+    // ── template markup ─────────────────────────────────────────────────────
+
+    /**
+     * The GRN's descriptions are built as HTML because the PDF is rendered from a template that
+     * styles them. A cell has no renderer, so a customer's description column showed the tags —
+     * literally `<div class="product-title">POLAR CABLE CHARGER</div>`.
+     *
+     * The inputs here are the exact shapes `GrnDataAggregationService` produces.
+     */
+    @Test
+    @DisplayName("template markup is flattened to the text a cell can actually show")
+    fun templateMarkupIsFlattened() {
+        assertEquals(
+            "Box",
+            DocumentExcelWriter.plainText("<span class=\"container-badge\">Box</span>")
+        )
+        assertEquals(
+            "Box Pallet of widgets",
+            DocumentExcelWriter.plainText("<span class=\"container-badge\">Box</span> Pallet of widgets")
+        )
+        assertEquals(
+            "No Description",
+            DocumentExcelWriter.plainText("<span class=\"no-description\">No Description</span>")
+        )
+    }
+
+    /**
+     * Two adjacent blocks must not weld together. Stripping tags to nothing would turn a product
+     * and its variant into "POLAR CABLE CHARGERBlack" — a value that is wrong in a way nobody
+     * would notice until they tried to match on it.
+     */
+    @Test
+    @DisplayName("adjacent blocks are separated, not welded together")
+    fun adjacentBlocksAreSeparated() {
+        assertEquals(
+            "POLAR CABLE CHARGER Black",
+            DocumentExcelWriter.plainText(
+                "<div class=\"product-title\">POLAR CABLE CHARGER</div>" +
+                    "<div class=\"variant-title\">Black</div>"
+            )
+        )
+    }
+
+    /**
+     * "No variant name available" is a placeholder that holds space in the PDF layout. Repeated
+     * down a column people filter and sort, it is noise dressed as data — so the block marked
+     * `no-variant` is dropped rather than flattened.
+     */
+    @Test
+    @DisplayName("the no-variant placeholder is dropped, not flattened into the description")
+    fun noVariantPlaceholderIsDropped() {
+        assertEquals(
+            "POLAR CABLE CHARGER",
+            DocumentExcelWriter.plainText(
+                "<div class=\"product-title\">POLAR CABLE CHARGER</div>" +
+                    "<div class=\"variant-title no-variant\">No variant name available</div>"
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("entities are decoded, and ordinary text is left alone")
+    fun entitiesAreDecodedAndPlainTextUntouched() {
+        assertEquals("Nuts & Bolts", DocumentExcelWriter.plainText("Nuts &amp; Bolts"))
+        assertEquals("12\" cable", DocumentExcelWriter.plainText("12&quot; cable"))
+        assertEquals("caf\u00e9", DocumentExcelWriter.plainText("caf&#233;"))
+        assertEquals("a b", DocumentExcelWriter.plainText("a&nbsp;b"))
+
+        // Decoded after tags are removed, so text that was genuinely escaped survives as text
+        // instead of becoming a tag and disappearing.
+        assertEquals("<b> is bold", DocumentExcelWriter.plainText("&lt;b&gt; is bold"))
+
+        // The overwhelmingly common case must be untouched, including nulls.
+        assertEquals("Blue Widget", DocumentExcelWriter.plainText("Blue Widget"))
+        assertEquals(null, DocumentExcelWriter.plainText(null))
+        assertEquals(null, DocumentExcelWriter.plainText("<span></span>"))
+    }
 }

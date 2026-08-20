@@ -423,6 +423,70 @@ object DocumentExcelWriter {
             out.toByteArray()
         }
 
+    // ── turning template markup back into text ──────────────────────────────────
+
+    /**
+     * Flatten a value that was built for an HTML template into something a cell can show.
+     *
+     * The GRN's descriptions are assembled as markup — `<span class="container-badge">Box</span>`,
+     * `<div class="product-title">…</div><div class="variant-title">…</div>` — because the PDF is
+     * rendered from an HTML template that styles them. A spreadsheet has no such renderer, so those
+     * cells displayed the tags themselves, and the customer's description column read as source
+     * code.
+     *
+     * Fixed here rather than in the aggregation because both formats share one DTO and the PDF
+     * genuinely wants the markup. Stripping at the point of writing a cell also means any tag a
+     * template gains later is handled without this having to be revisited.
+     *
+     * Tags collapse to a single space rather than to nothing, so two adjacent blocks do not weld
+     * into `POLAR CABLEBlack` — and entities are decoded *after* tags are removed, so a `&lt;b&gt;`
+     * that was genuinely part of a product name cannot turn into a tag and then vanish.
+     */
+    fun plainText(value: String?): String? {
+        if (value == null) return null
+        // Overwhelmingly the common case: ordinary text, nothing to do.
+        if ('<' !in value && '&' !in value) return value
+
+        return value
+            // Placeholders that exist only to hold space in the PDF layout. In a column people
+            // filter and sort, "No variant name available" on every second row is noise, not data.
+            .replace(PLACEHOLDER_BLOCK, " ")
+            .replace(HTML_TAG, " ")
+            .let(::decodeEntities)
+            .replace(WHITESPACE, " ")
+            .trim()
+            .ifBlank { null }
+    }
+
+    private fun decodeEntities(text: String): String {
+        if ('&' !in text) return text
+        var decoded = text
+        NAMED_ENTITIES.forEach { (entity, replacement) -> decoded = decoded.replace(entity, replacement) }
+        return NUMERIC_ENTITY.replace(decoded) { match ->
+            val (hex, digits) = match.destructured
+            val code = if (hex.isNotEmpty()) digits.toIntOrNull(16) else digits.toIntOrNull()
+            code?.takeIf { it in 1..0x10FFFF }?.let { String(Character.toChars(it)) } ?: match.value
+        }
+    }
+
+    private val PLACEHOLDER_BLOCK =
+        Regex("""<([a-z]+)[^>]*\bclass\s*=\s*"[^"]*\bno-variant\b[^"]*"[^>]*>.*?</\1>""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
+    private val HTML_TAG = Regex("<[^>]*>")
+    private val WHITESPACE = Regex("\\s+")
+    private val NUMERIC_ENTITY = Regex("&#(x)?([0-9a-fA-F]+);", RegexOption.IGNORE_CASE)
+
+    private val NAMED_ENTITIES = listOf(
+        "&nbsp;" to " ",
+        "&lt;" to "<",
+        "&gt;" to ">",
+        "&quot;" to "\"",
+        "&apos;" to "'",
+        // Last, so an escaped ampersand cannot revive one of the entities above.
+        "&amp;" to "&"
+    )
+
     // ── formatting helpers, so callers do not each invent their own ─────────────
 
     fun formatDate(value: LocalDateTime?): String? = value?.toLocalDate()?.let { formatDate(it) }
