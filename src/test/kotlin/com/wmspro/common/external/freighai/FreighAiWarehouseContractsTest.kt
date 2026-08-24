@@ -54,6 +54,7 @@ class FreighAiWarehouseContractsTest {
         )
         assertTrue(json.contains("\"jobLinkContractVersion\":\"GENERIC_JOB_V1\""))
         assertTrue(json.contains("\"jobCategory\":\"WAREHOUSE\""))
+        assertTrue(json.contains("\"allowVendorInvoiceNumberReuse\":false"))
         assertFalse(json.contains("\"linkedJobOrders\":["))
     }
 

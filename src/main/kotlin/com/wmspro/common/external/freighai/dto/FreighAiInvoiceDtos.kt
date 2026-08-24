@@ -38,6 +38,12 @@ data class CreateFreighAiInvoiceRequest(
     val linkedJobs: List<FreighAiLinkedJob>? = null,
     val sourceSystem: String? = null,
     val externalReference: String? = null,
+    /**
+     * FreighAI Finance runs with Jackson's fail-on-null primitive handling.
+     * Send this default explicitly so an omitted Kotlin default cannot be
+     * interpreted as a null primitive by a newer Finance runtime.
+     */
+    val allowVendorInvoiceNumberReuse: Boolean = false,
     val currencyId: String,
     val referenceNo: String,
     val narration: String? = null,
