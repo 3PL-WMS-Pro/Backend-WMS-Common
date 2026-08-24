@@ -30,6 +30,9 @@ object MongoConnectionStorage {
         storage.set(connectionString)
     }
 
+    /** True only when a request/worker explicitly selected a database. */
+    fun hasExplicitConnection(): Boolean = storage.get() != null
+
     /**
      * Clears the current thread's connection
      */

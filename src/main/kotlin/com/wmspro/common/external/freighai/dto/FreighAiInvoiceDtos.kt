@@ -19,11 +19,8 @@ import java.time.LocalDate
 /**
  * `POST {freighai}/api/v1/invoices` request body.
  *
- * Notes:
- *   - `linkedJobOrders` is null — WMS invoices are not JO-bound.
- *   - `purpose` is "ADDITIONAL" — bypasses the (jobOrderId, purpose)
- *     uniqueness constraint that FreighAi normally enforces, and is the
- *     correct semantics for a non-JO recurring charge.
+ * Legacy callers retain ADDITIONAL. Warehouse Job callers must explicitly
+ * select WAREHOUSING and GENERIC_JOB_V1; they never populate linkedJobOrders.
  */
 data class CreateFreighAiInvoiceRequest(
     val invoiceType: String = "SALES",
@@ -31,18 +28,44 @@ data class CreateFreighAiInvoiceRequest(
     val partyId: String,
     val purpose: String = "ADDITIONAL",
     val linkedJobOrders: List<Any>? = null,
+    /**
+     * Forward-only generic work linkage.  Legacy callers leave these fields
+     * absent; Warehouse Job callers must persist GENERIC_JOB_V1 and use
+     * linkedJobs rather than manufacturing a shipment-style linkedJobOrders
+     * entry.
+     */
+    val jobLinkContractVersion: String? = null,
+    val linkedJobs: List<FreighAiLinkedJob>? = null,
+    val sourceSystem: String? = null,
+    val externalReference: String? = null,
     val currencyId: String,
     val referenceNo: String,
     val narration: String? = null,
     val lineItems: List<FreighAiInvoiceLineItem>
 )
 
+data class FreighAiLinkedJob(
+    val jobId: String,
+    val jobCategory: String,
+    val jobNo: String? = null,
+    val customerId: String? = null
+)
+
+object FreighAiInvoiceContracts {
+    const val GENERIC_JOB_V1 = "GENERIC_JOB_V1"
+    const val WAREHOUSING = "WAREHOUSING"
+    const val SOURCE_WMS = "WMS"
+}
+
 data class FreighAiInvoiceLineItem(
+    val lineId: String? = null,
     val description: String,
     val quantity: BigDecimal,
     val unit: String,
     val unitPrice: BigDecimal,
     val chargeTypeId: String,
+    /** Required on GENERIC_JOB_V1 Warehouse SI lines for fail-closed scoped ledger resolution. */
+    val warehouseAccountingCategory: String? = null,
     val vatPercent: BigDecimal? = null,
     val vatAmount: BigDecimal? = null,
     /**
@@ -76,7 +99,9 @@ data class FreighAiInvoiceLineItem(
  * DRAFT-only on the FreighAi side — see `InvoiceService.update`.
  */
 data class UpdateFreighAiInvoiceRequest(
-    val lineItems: List<FreighAiInvoiceLineItem>
+    val lineItems: List<FreighAiInvoiceLineItem>,
+    /** Required by FreighAI only for GENERIC_JOB_V1 optimistic concurrency. */
+    val expectedDocumentRevision: Long? = null
 )
 
 /**
@@ -87,6 +112,7 @@ data class UpdateFreighAiInvoiceRequest(
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class FreighAiInvoiceLineItemResponse(
     val lineNo: Int,
+    val lineId: String? = null,
     val description: String,
     val quantity: BigDecimal,
     val unit: String,
@@ -96,7 +122,9 @@ data class FreighAiInvoiceLineItemResponse(
     val chargeTypeLabel: String? = null,
     val vatPercent: BigDecimal? = null,
     val vatAmount: BigDecimal? = null,
-    val ledgerId: String? = null
+    val ledgerId: String? = null,
+    /** Present on GENERIC_JOB_V1 Warehouse lines; required again on updates. */
+    val warehouseAccountingCategory: String? = null
 )
 
 /**
@@ -116,6 +144,14 @@ data class FreighAiInvoiceResponse(
     val currentStatus: String? = null,
     val outstandingAmount: BigDecimal? = null,
     val referenceNo: String? = null,
+    val sourceSystem: String? = null,
+    val externalReference: String? = null,
+    val jobLinkContractVersion: String? = null,
+    val linkedJobs: List<FreighAiLinkedJob> = emptyList(),
+    val currencyId: String? = null,
+    val currency: FreighAiCurrencyEmbed? = null,
+    val documentRevision: Long = 0,
+    val allocationRevision: Long = 0,
     /**
      * Line items as FreighAi currently holds them. FreighAi has always
      * returned these on `GET /invoices/{id}`; WMS simply wasn't deserialising
@@ -129,6 +165,64 @@ data class FreighAiInvoiceResponse(
     val subtotal: BigDecimal? = null,
     val totalVatAmount: BigDecimal? = null
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class FreighAiCurrencyEmbed(val code: String, val symbol: String? = null)
+
+data class ReplaceFreighAiJobAllocationsRequest(
+    val expectedAllocationRevision: Long,
+    val allocations: List<FreighAiJobAllocationItem>
+)
+
+data class FreighAiJobAllocationItem(
+    val allocationKey: String,
+    val invoiceLineId: String,
+    val target: String = "JOB",
+    val jobId: String,
+    val jobCategory: String = "WAREHOUSE",
+    val costLineId: String? = null,
+    val jobLineId: String? = null,
+    val netAmount: BigDecimal,
+    val vatAmount: BigDecimal = BigDecimal.ZERO,
+    val grossAmount: BigDecimal,
+    val documentCurrency: String,
+    val baseCurrency: String,
+    val postingFxRate: BigDecimal = BigDecimal.ONE,
+    val baseNetAmount: BigDecimal,
+    val baseVatAmount: BigDecimal = BigDecimal.ZERO,
+    val baseGrossAmount: BigDecimal
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ReplaceFreighAiJobAllocationsResponse(
+    val invoiceId: String,
+    val allocationRevision: Long,
+    val allocatedGross: BigDecimal,
+    val unallocatedGross: BigDecimal
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class FreighAiJobAllocationResponse(
+    val allocationKey: String,
+    val invoiceLineId: String,
+    val target: String,
+    val jobId: String? = null,
+    val jobCategory: String? = null,
+    val costLineId: String? = null,
+    val jobLineId: String? = null,
+    val netAmount: BigDecimal,
+    val vatAmount: BigDecimal,
+    val grossAmount: BigDecimal,
+    val documentCurrency: String,
+    val baseCurrency: String,
+    val postingFxRate: BigDecimal,
+    val baseNetAmount: BigDecimal,
+    val baseVatAmount: BigDecimal,
+    val baseGrossAmount: BigDecimal
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class FreighAiJobAllocationPage(val content: List<FreighAiJobAllocationResponse> = emptyList())
 
 /**
  * Used by `findInvoiceByReferenceNo` — FreighAi may return zero or more

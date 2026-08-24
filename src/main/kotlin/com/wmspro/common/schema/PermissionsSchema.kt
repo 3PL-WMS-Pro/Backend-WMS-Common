@@ -27,6 +27,14 @@ data class PermissionsSchema(
     val canManageWarehouses: Boolean = false,
     val canConfigureSettings: Boolean = false,
     val canViewBilling: Boolean = false,
+    val canViewWarehouseJobs: Boolean = false,
+    val canGenerateWarehouseJobs: Boolean = false,
+    val canSyncWarehouseJobs: Boolean = false,
+    val canCancelWarehouseJobs: Boolean = false,
+    val canEditBillingInvoices: Boolean = false,
+    val canSendBillingInvoices: Boolean = false,
+    val canViewBillingCosts: Boolean = false,
+    val canRunBillingReconciliation: Boolean = false,
 
     // System Permissions (2 permissions)
     val canAccessApi: Boolean = true,
@@ -58,6 +66,14 @@ data class PermissionsSchema(
                 canManageWarehouses = true,
                 canConfigureSettings = true,
                 canViewBilling = true,
+                canViewWarehouseJobs = true,
+                canGenerateWarehouseJobs = true,
+                canSyncWarehouseJobs = true,
+                canCancelWarehouseJobs = true,
+                canEditBillingInvoices = true,
+                canSendBillingInvoices = true,
+                canViewBillingCosts = true,
+                canRunBillingReconciliation = true,
                 // System
                 canAccessApi = true,
                 canUseMobileApp = true,
@@ -120,6 +136,9 @@ data class PermissionsSchema(
                 canManageWarehouses = true,
                 canConfigureSettings = false,
                 canViewBilling = true,
+                canViewWarehouseJobs = true,
+                canViewBillingCosts = true,
+                canRunBillingReconciliation = true,
                 // System
                 canAccessApi = true,
                 canUseMobileApp = true,
@@ -190,6 +209,14 @@ data class PermissionsSchema(
             canManageWarehouses = this.canManageWarehouses || other.canManageWarehouses,
             canConfigureSettings = this.canConfigureSettings || other.canConfigureSettings,
             canViewBilling = this.canViewBilling || other.canViewBilling,
+            canViewWarehouseJobs = this.canViewWarehouseJobs || other.canViewWarehouseJobs,
+            canGenerateWarehouseJobs = this.canGenerateWarehouseJobs || other.canGenerateWarehouseJobs,
+            canSyncWarehouseJobs = this.canSyncWarehouseJobs || other.canSyncWarehouseJobs,
+            canCancelWarehouseJobs = this.canCancelWarehouseJobs || other.canCancelWarehouseJobs,
+            canEditBillingInvoices = this.canEditBillingInvoices || other.canEditBillingInvoices,
+            canSendBillingInvoices = this.canSendBillingInvoices || other.canSendBillingInvoices,
+            canViewBillingCosts = this.canViewBillingCosts || other.canViewBillingCosts,
+            canRunBillingReconciliation = this.canRunBillingReconciliation || other.canRunBillingReconciliation,
             canAccessApi = this.canAccessApi || other.canAccessApi,
             canUseMobileApp = this.canUseMobileApp || other.canUseMobileApp,
             canExportData = this.canExportData || other.canExportData
@@ -210,7 +237,10 @@ data class PermissionsSchema(
      */
     fun hasManagementPermissions(): Boolean {
         return canViewReports || canManageUsers || canManageWarehouses ||
-               canConfigureSettings || canViewBilling
+               canConfigureSettings || canViewBilling || canViewWarehouseJobs ||
+               canGenerateWarehouseJobs || canSyncWarehouseJobs || canCancelWarehouseJobs ||
+               canEditBillingInvoices || canSendBillingInvoices || canViewBillingCosts ||
+               canRunBillingReconciliation
     }
 
     /**

@@ -6,6 +6,10 @@ import com.wmspro.common.external.freighai.dto.ApiEnvelope
 import com.wmspro.common.external.freighai.dto.CreateFreighAiInvoiceRequest
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceListItem
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceResponse
+import com.wmspro.common.external.freighai.dto.FreighAiJobAllocationPage
+import com.wmspro.common.external.freighai.dto.FreighAiJobAllocationResponse
+import com.wmspro.common.external.freighai.dto.ReplaceFreighAiJobAllocationsRequest
+import com.wmspro.common.external.freighai.dto.ReplaceFreighAiJobAllocationsResponse
 import com.wmspro.common.external.freighai.dto.UpdateFreighAiInvoiceRequest
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
@@ -88,6 +92,119 @@ class FreighAiInvoiceClient(
     }
 
     /**
+     * Forward-only exact lookup used by the Warehouse Job saga.  Unlike the
+     * legacy fuzzy helper, an outage is never interpreted as absence.
+     */
+    fun findInvoiceByExternalReference(
+        sourceSystem: String,
+        externalReference: String,
+        authToken: String
+    ): InvoiceLookupResult {
+        val url = UriComponentsBuilder
+            .fromUriString("$baseUrl/api/v1/invoices/by-external-reference")
+            .queryParam("sourceSystem", sourceSystem)
+            .queryParam("externalReference", externalReference)
+            .build().toUriString()
+        return try {
+            val response = restTemplate.exchange(
+                url, HttpMethod.GET, HttpEntity<Void>(buildHeaders(authToken)), String::class.java
+            )
+            val envelope = objectMapper.readValue(
+                response.body,
+                object : TypeReference<ApiEnvelope<FreighAiInvoiceResponse>>() {}
+            )
+            if (envelope.success && envelope.data != null) InvoiceLookupResult.Found(envelope.data)
+            else InvoiceLookupResult.Unavailable(envelope.message ?: "Invalid FreighAI response")
+        } catch (e: org.springframework.web.client.HttpClientErrorException.NotFound) {
+            InvoiceLookupResult.NotFound
+        } catch (e: Exception) {
+            logger.error("FreighAi exact invoice lookup failed for {}", externalReference, e)
+            InvoiceLookupResult.Unavailable(e.message ?: "Lookup failed")
+        }
+    }
+
+    /** Create path for GENERIC_JOB_V1 documents; legacy callers remain unchanged. */
+    fun createInvoiceV1(
+        request: CreateFreighAiInvoiceRequest,
+        idempotencyKey: String,
+        authToken: String
+    ): InvoiceV1CreationResult {
+        require(request.jobLinkContractVersion == "GENERIC_JOB_V1") {
+            "GENERIC_JOB_V1 marker is required"
+        }
+        return try {
+            val headers = buildHeaders(authToken).apply { set("Idempotency-Key", idempotencyKey) }
+            val response = restTemplate.exchange(
+                "$baseUrl/api/v1/invoices",
+                HttpMethod.POST,
+                HttpEntity(request, headers),
+                String::class.java
+            )
+            val envelope = objectMapper.readValue(
+                response.body,
+                object : TypeReference<ApiEnvelope<FreighAiInvoiceResponse>>() {}
+            )
+            if (envelope.success && envelope.data != null) InvoiceV1CreationResult.Success(envelope.data)
+            else InvoiceV1CreationResult.Rejected(envelope.message ?: "Invalid FreighAI response")
+        } catch (e: HttpStatusCodeException) {
+            InvoiceV1CreationResult.Rejected(extractEnvelopeMessage(e.responseBodyAsString) ?: e.statusCode.toString())
+        } catch (e: RestClientException) {
+            InvoiceV1CreationResult.Indeterminate(e.message ?: "Transport failure")
+        } catch (e: Exception) {
+            InvoiceV1CreationResult.Indeterminate(e.message ?: "Unexpected failure")
+        }
+    }
+
+    fun replaceJobAllocationsV1(
+        invoiceId: String,
+        request: ReplaceFreighAiJobAllocationsRequest,
+        idempotencyKey: String,
+        authToken: String,
+        actorId: String
+    ): InvoiceAllocationMutationResult = try {
+        val headers = buildHeaders(authToken).apply {
+            set("Idempotency-Key", idempotencyKey)
+            set("X-User-Id", actorId)
+        }
+        val response = restTemplate.exchange(
+            "$baseUrl/api/v1/invoices/$invoiceId/job-allocations:batch",
+            HttpMethod.POST,
+            HttpEntity(request, headers),
+            String::class.java
+        )
+        val envelope = objectMapper.readValue(
+            response.body,
+            object : TypeReference<ApiEnvelope<ReplaceFreighAiJobAllocationsResponse>>() {}
+        )
+        if (envelope.success && envelope.data != null) InvoiceAllocationMutationResult.Success(envelope.data)
+        else InvoiceAllocationMutationResult.Rejected(envelope.message ?: "Invalid FreighAI response")
+    } catch (e: HttpStatusCodeException) {
+        InvoiceAllocationMutationResult.Rejected(extractEnvelopeMessage(e.responseBodyAsString) ?: e.statusCode.toString())
+    } catch (e: RestClientException) {
+        InvoiceAllocationMutationResult.Indeterminate(e.message ?: "Transport failure")
+    } catch (e: Exception) {
+        InvoiceAllocationMutationResult.Indeterminate(e.message ?: "Unexpected failure")
+    }
+
+    /** Authoritative recovery read after an allocation response is lost. */
+    fun getJobAllocationsV1(invoiceId: String, authToken: String): InvoiceAllocationLookupResult = try {
+        val url = UriComponentsBuilder.fromUriString("$baseUrl/api/v1/invoices/$invoiceId/job-allocations")
+            .queryParam("page", 1).queryParam("size", 200).build().toUriString()
+        val response = restTemplate.exchange(
+            url, HttpMethod.GET, HttpEntity<Void>(buildHeaders(authToken)), String::class.java
+        )
+        val envelope = objectMapper.readValue(
+            response.body,
+            object : TypeReference<ApiEnvelope<FreighAiJobAllocationPage>>() {}
+        )
+        if (envelope.success && envelope.data != null) InvoiceAllocationLookupResult.Found(envelope.data.content)
+        else InvoiceAllocationLookupResult.Unavailable(envelope.message ?: "Invalid FreighAI response")
+    } catch (e: Exception) {
+        logger.error("FreighAi allocation recovery read failed for {}", invoiceId, e)
+        InvoiceAllocationLookupResult.Unavailable(e.message ?: "Lookup failed")
+    }
+
+    /**
      * Create a Sales Invoice in FreighAi. Called only AFTER a referenceNo
      * lookup confirms no duplicate exists (or to recover from a missing
      * binding). FreighAi creates the paired Voucher atomically and returns
@@ -157,8 +274,17 @@ class FreighAiInvoiceClient(
         } catch (e: HttpStatusCodeException) {
             val msg = extractEnvelopeMessage(e.responseBodyAsString)
                 ?: "FreighAi returned ${e.statusCode}"
-            logger.error("FreighAi updateInvoice {} rejected: {}", invoiceId, msg)
-            InvoiceUpdateResult.Failure(msg)
+            if (e.statusCode.is5xxServerError) {
+                // Finance uses ordered writes on standalone MongoDB. A 5xx can
+                // therefore mean the request reached a later persistence step;
+                // treating it as a definite rejection could trigger an unsafe
+                // re-send/restore against a partially applied edit.
+                logger.error("FreighAi updateInvoice {} server failure with uncertain outcome: {}", invoiceId, msg)
+                InvoiceUpdateResult.Indeterminate("FreighAi server failure; outcome is uncertain: $msg")
+            } else {
+                logger.error("FreighAi updateInvoice {} rejected: {}", invoiceId, msg)
+                InvoiceUpdateResult.Failure(msg)
+            }
         } catch (e: RestClientException) {
             // No HTTP status came back, so the request may well have been
             // applied — the response was simply lost. Callers must not assume
@@ -347,6 +473,17 @@ class FreighAiInvoiceClient(
     }
 }
 
+sealed class InvoiceAllocationMutationResult {
+    data class Success(val response: ReplaceFreighAiJobAllocationsResponse) : InvoiceAllocationMutationResult()
+    data class Rejected(val errorMessage: String) : InvoiceAllocationMutationResult()
+    data class Indeterminate(val errorMessage: String) : InvoiceAllocationMutationResult()
+}
+
+sealed class InvoiceAllocationLookupResult {
+    data class Found(val allocations: List<FreighAiJobAllocationResponse>) : InvoiceAllocationLookupResult()
+    data class Unavailable(val errorMessage: String) : InvoiceAllocationLookupResult()
+}
+
 /**
  * Result of [FreighAiInvoiceClient.createInvoice]. Sealed so callers can
  * pattern-match success vs failure without nullable juggling.
@@ -354,6 +491,18 @@ class FreighAiInvoiceClient(
 sealed class InvoiceCreationResult {
     data class Success(val invoice: FreighAiInvoiceResponse) : InvoiceCreationResult()
     data class Failure(val errorMessage: String) : InvoiceCreationResult()
+}
+
+sealed class InvoiceLookupResult {
+    data class Found(val invoice: FreighAiInvoiceResponse) : InvoiceLookupResult()
+    data object NotFound : InvoiceLookupResult()
+    data class Unavailable(val errorMessage: String) : InvoiceLookupResult()
+}
+
+sealed class InvoiceV1CreationResult {
+    data class Success(val invoice: FreighAiInvoiceResponse) : InvoiceV1CreationResult()
+    data class Rejected(val errorMessage: String) : InvoiceV1CreationResult()
+    data class Indeterminate(val errorMessage: String) : InvoiceV1CreationResult()
 }
 
 /** Result of [FreighAiInvoiceClient.sendInvoice]. */
