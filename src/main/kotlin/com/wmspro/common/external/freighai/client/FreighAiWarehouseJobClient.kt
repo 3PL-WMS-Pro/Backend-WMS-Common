@@ -97,6 +97,13 @@ class FreighAiWarehouseJobClient(
         WarehouseJobDocumentResult.Unavailable(e.message ?: "Lookup failed")
     }
 
+    /** Additive cost-only amendment. Remote expense identity makes uncertain retries safe. */
+    fun appendSupplierExpense(jobId: String, request: Map<String, Any?>, expenseId: String, authToken: String): WarehouseJobMutationResult = mutate(
+        url = "$baseUrl/api/v1/warehouse-jobs/$jobId/supplier-expenses",
+        method = HttpMethod.POST, body = request, idempotencyKey = "supplier-expense-$expenseId",
+        authToken = authToken, createResponse = false
+    )
+
     fun replaceSnapshot(
         jobId: String,
         request: ReplaceFreighAiWarehouseSnapshotRequest,

@@ -28,6 +28,7 @@ data class PermissionsSchema(
     val canConfigureSettings: Boolean = false,
     val canViewBilling: Boolean = false,
     val canViewWarehouseJobs: Boolean = false,
+    val canManageSupplierExpenses: Boolean = false,
     val canGenerateWarehouseJobs: Boolean = false,
     val canSyncWarehouseJobs: Boolean = false,
     val canCancelWarehouseJobs: Boolean = false,
@@ -67,6 +68,7 @@ data class PermissionsSchema(
                 canConfigureSettings = true,
                 canViewBilling = true,
                 canViewWarehouseJobs = true,
+                canManageSupplierExpenses = true,
                 canGenerateWarehouseJobs = true,
                 canSyncWarehouseJobs = true,
                 canCancelWarehouseJobs = true,
@@ -137,6 +139,7 @@ data class PermissionsSchema(
                 canConfigureSettings = false,
                 canViewBilling = true,
                 canViewWarehouseJobs = true,
+                canManageSupplierExpenses = true,
                 canViewBillingCosts = true,
                 canRunBillingReconciliation = true,
                 // System
@@ -210,6 +213,7 @@ data class PermissionsSchema(
             canConfigureSettings = this.canConfigureSettings || other.canConfigureSettings,
             canViewBilling = this.canViewBilling || other.canViewBilling,
             canViewWarehouseJobs = this.canViewWarehouseJobs || other.canViewWarehouseJobs,
+            canManageSupplierExpenses = this.canManageSupplierExpenses || other.canManageSupplierExpenses,
             canGenerateWarehouseJobs = this.canGenerateWarehouseJobs || other.canGenerateWarehouseJobs,
             canSyncWarehouseJobs = this.canSyncWarehouseJobs || other.canSyncWarehouseJobs,
             canCancelWarehouseJobs = this.canCancelWarehouseJobs || other.canCancelWarehouseJobs,
@@ -237,7 +241,7 @@ data class PermissionsSchema(
      */
     fun hasManagementPermissions(): Boolean {
         return canViewReports || canManageUsers || canManageWarehouses ||
-               canConfigureSettings || canViewBilling || canViewWarehouseJobs ||
+               canConfigureSettings || canViewBilling || canViewWarehouseJobs || canManageSupplierExpenses ||
                canGenerateWarehouseJobs || canSyncWarehouseJobs || canCancelWarehouseJobs ||
                canEditBillingInvoices || canSendBillingInvoices || canViewBillingCosts ||
                canRunBillingReconciliation
