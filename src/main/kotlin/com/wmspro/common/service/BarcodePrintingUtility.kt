@@ -594,6 +594,15 @@ class BarcodePrintingUtility {
     data class BarcodeInfo(
         val barcodeText: String,
         val skuName: String? = null,
+        /**
+         * SKU code, e.g. "001-096-2016", as distinct from the item barcode which appends a
+         * per-item sequence to it.
+         *
+         * Ignored by this renderer, which has no row for it. Carried here so that call sites
+         * feeding the newer WarehouseLabelRenderer through LegacyLabelAdapter can supply it
+         * without having to be rewritten to a different request shape first.
+         */
+        val skuCode: String? = null,
         val accountName: String? = null,
         val accountId: String? = null,
         val receivedDate: String? = null,
